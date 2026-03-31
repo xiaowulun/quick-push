@@ -3,8 +3,8 @@ name: GitHub Trending Daily Push
 # 触发条件
 on:
   schedule:
-    # UTC 时间的 0:00，相当于北京时间的早上 8:00
-    - cron: '0 0 * * *'
+    # UTC 时间的 0:00，相当于北京时间的早上 10:00
+    - cron: '0 2 * * *'
   # 允许在 GitHub 网页端手动点击按钮触发（极其方便测试！）
   workflow_dispatch:
 

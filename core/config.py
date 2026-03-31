@@ -29,7 +29,7 @@ class FeishuConfig(BaseModel):
 class MultimodalConfig(BaseModel):
     max_chars: int = Field(default=3000, description="README 最大字符数")
     max_images: int = Field(default=3, description="最大图片数量")
-    enable_multimodal: bool = Field(default=False, description="是否启用多模态输入")
+    enable_multimodal: bool = Field(default=True, description="是否启用多模态输入")
 
 
 class BehaviorConfig(BaseModel):
