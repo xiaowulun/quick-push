@@ -177,16 +177,12 @@ class Summarizer:
         retry_count: int = 0
     ) -> dict:
         try:
-            loop = asyncio.get_event_loop()
-            result: ProjectAnalysis = await loop.run_in_executor(
-                None,
-                lambda: self.chain.invoke({
-                    "repo_name": repo_name,
-                    "description": description or "无",
-                    "stars": stars,
-                    "readme_content": readme_preview
-                })
-            )
+            result: ProjectAnalysis = await self.chain.ainvoke({
+                "repo_name": repo_name,
+                "description": description or "无",
+                "stars": stars,
+                "readme_content": readme_preview
+            })
             return result.model_dump()
         except Exception as e:
             if retry_count < self.max_retries:
