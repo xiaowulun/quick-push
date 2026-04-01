@@ -1,7 +1,7 @@
 import sqlite3
 import json
-from datetime import datetime
-from typing import Optional, Dict
+from datetime import datetime, date
+from typing import Optional, Dict, List
 from pathlib import Path
 
 
@@ -16,6 +16,7 @@ class AnalysisCache:
     def _init_db(self):
         """初始化数据库表"""
         with sqlite3.connect(self.db_path) as conn:
+            # 分析结果缓存表
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS analysis_cache (
                     repo_full_name TEXT PRIMARY KEY,
@@ -24,6 +25,34 @@ class AnalysisCache:
                     analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # 趋势历史记录表
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trending_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_date DATE NOT NULL,
+                    repo_full_name TEXT NOT NULL,
+                    language TEXT,
+                    stars INTEGER,
+                    stars_today INTEGER,
+                    rank INTEGER,
+                    since_type TEXT NOT NULL,
+                    category TEXT,
+                    UNIQUE(record_date, repo_full_name, since_type)
+                )
+            """)
+
+            # 项目信息维度表
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS repo_info (
+                    repo_full_name TEXT PRIMARY KEY,
+                    first_seen DATE,
+                    last_seen DATE,
+                    total_appearances INTEGER DEFAULT 0,
+                    category TEXT
+                )
+            """)
+
             conn.commit()
 
     def get(self, repo_full_name: str) -> Optional[Dict]:
@@ -75,5 +104,161 @@ class AnalysisCache:
         """获取缓存统计信息"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM analysis_cache")
-            count = cursor.fetchone()[0]
-            return {"total_cached": count}
+            analysis_count = cursor.fetchone()[0]
+
+            cursor = conn.execute("SELECT COUNT(*) FROM trending_history")
+            history_count = cursor.fetchone()[0]
+
+            cursor = conn.execute("SELECT COUNT(*) FROM repo_info")
+            repo_count = cursor.fetchone()[0]
+
+            return {
+                "total_cached": analysis_count,
+                "trending_records": history_count,
+                "tracked_repos": repo_count
+            }
+
+    # ========== 趋势分析相关方法 ==========
+
+    def save_trending_record(
+        self,
+        record_date: date,
+        repo_full_name: str,
+        language: str,
+        stars: int,
+        stars_today: int,
+        rank: int,
+        since_type: str,
+        category: Optional[str] = None
+    ):
+        """保存趋势记录"""
+        with sqlite3.connect(self.db_path) as conn:
+            # 保存趋势记录
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO trending_history
+                (record_date, repo_full_name, language, stars, stars_today, rank, since_type, category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (record_date, repo_full_name, language, stars, stars_today, rank, since_type, category)
+            )
+
+            # 更新项目信息
+            conn.execute(
+                """
+                INSERT INTO repo_info (repo_full_name, first_seen, last_seen, total_appearances, category)
+                VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(repo_full_name) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    total_appearances = repo_info.total_appearances + 1,
+                    category = COALESCE(excluded.category, repo_info.category)
+                """,
+                (repo_full_name, record_date, record_date, category)
+            )
+
+            conn.commit()
+
+    def get_trending_history(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        repo_name: Optional[str] = None,
+        since_type: Optional[str] = None
+    ) -> List[Dict]:
+        """查询趋势历史"""
+        query = "SELECT * FROM trending_history WHERE 1=1"
+        params = []
+
+        if start_date:
+            query += " AND record_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND record_date <= ?"
+            params.append(end_date)
+        if repo_name:
+            query += " AND repo_full_name = ?"
+            params.append(repo_name)
+        if since_type:
+            query += " AND since_type = ?"
+            params.append(since_type)
+
+        query += " ORDER BY record_date DESC, rank ASC"
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_hot_repos(self, days: int = 7, limit: int = 10) -> List[Dict]:
+        """获取近期热门项目（上榜次数最多）"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT
+                    repo_full_name,
+                    COUNT(*) as appearances,
+                    AVG(rank) as avg_rank,
+                    MAX(record_date) as last_seen
+                FROM trending_history
+                WHERE record_date >= date('now', '-{} days')
+                GROUP BY repo_full_name
+                ORDER BY appearances DESC, avg_rank ASC
+                LIMIT {}
+                """.format(days, limit)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_category_trends(self, days: int = 7) -> List[Dict]:
+        """获取分类趋势统计"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT
+                    category,
+                    COUNT(*) as count,
+                    COUNT(DISTINCT record_date) as days
+                FROM trending_history
+                WHERE record_date >= date('now', '-{} days')
+                AND category IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC
+                """.format(days)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_new_stars(self, days: int = 7, limit: int = 5) -> List[Dict]:
+        """获取新星项目（首次上榜）"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT
+                    th.repo_full_name,
+                    th.record_date,
+                    th.rank,
+                    th.stars,
+                    th.category
+                FROM trending_history th
+                JOIN repo_info ri ON th.repo_full_name = ri.repo_full_name
+                WHERE th.record_date >= date('now', '-{} days')
+                AND ri.first_seen >= date('now', '-{} days')
+                ORDER BY th.rank ASC
+                LIMIT {}
+                """.format(days, days, limit)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def generate_trend_report(self, days: int = 7) -> Dict:
+        """生成趋势报表"""
+        return {
+            "period": f"最近 {days} 天",
+            "hot_repos": self.get_hot_repos(days),
+            "category_trends": self.get_category_trends(days),
+            "new_stars": self.get_new_stars(days),
+            "total_records": len(self.get_trending_history(
+                start_date=date.today().isoformat(),
+                end_date=date.today().isoformat()
+            ))
+        }

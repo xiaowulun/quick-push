@@ -1,12 +1,14 @@
 import os
 import asyncio
 import argparse
-from datetime import datetime
+from datetime import datetime, date
 from dotenv import load_dotenv
 from core.github_fetcher import GitHubFetcher
 from core.summarizer import Summarizer
+from core.classifier import ProjectClassifier
 from utils.notifier import Notifier, TrendingMessage
 from utils.logging_config import setup_logging, get_logger
+from utils.cache import AnalysisCache
 from core.config import get_config
 
 load_dotenv()
@@ -60,6 +62,9 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
 
     logger.info(f"分析完成，成功 {len(success_messages)} 个，失败 {len(failure_repos)} 个")
 
+    # 保存趋势数据
+    _save_trending_data(repos, since)
+
     mode = "feishu" if notify else "print"
     notifier = Notifier(mode=mode)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -75,6 +80,43 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
     return success_messages
 
 
+def _save_trending_data(repos, since_type: str):
+    """保存趋势数据到数据库"""
+    try:
+        cache = AnalysisCache()
+        classifier = ProjectClassifier()
+        today = date.today()
+
+        for i, repo in enumerate(repos, 1):
+            # 获取项目分类
+            try:
+                classification = classifier.classify(
+                    repo.full_name,
+                    repo.description,
+                    repo.readme
+                )
+                category = classification.category.value
+            except Exception as e:
+                logger.warning(f"分类失败 {repo.full_name}: {e}")
+                category = None
+
+            # 保存趋势记录
+            cache.save_trending_record(
+                record_date=today,
+                repo_full_name=repo.full_name,
+                language=repo.language or "Unknown",
+                stars=repo.stars,
+                stars_today=repo.stars_today,
+                rank=i,
+                since_type=since_type,
+                category=category
+            )
+
+        logger.info(f"已保存 {len(repos)} 条趋势记录")
+    except Exception as e:
+        logger.error(f"保存趋势数据失败: {e}")
+
+
 def _is_failure_analysis(analysis: dict) -> bool:
     reasons = analysis.get("reasons", [])
     if not reasons:
@@ -86,7 +128,7 @@ def _is_failure_analysis(analysis: dict) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="GitHub 热门项目分析推送工具")
     parser.add_argument("--language", "-l", default="", help="编程语言筛选，如 python, javascript")
-    parser.add_argument("--since", "-s", default="daily",
+    parser.add_argument("--since", "-s", default="weekly",
                         choices=["daily", "weekly", "monthly"],
                         help="时间范围")
     parser.add_argument("--limit", "-n", type=int, default=10, help="获取数量")

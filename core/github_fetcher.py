@@ -42,7 +42,7 @@ class GitHubFetcher:
     def fetch_trending(
         self,
         language: str = "",
-        since: Literal["daily", "weekly", "monthly"] = "weekly",
+        since: Literal["daily", "weekly", "monthly"] = "daily",
         limit: int = 10
     ) -> list[Repo]:
         repos = self._fetch_from_trending_page(language, since, limit)
