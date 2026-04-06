@@ -10,6 +10,7 @@ from core.classifier import ProjectClassifier, ProjectCategory
 from core.prompts import get_prompt_by_category, get_category_emoji
 from utils.multimodal_builder import build_multimodal_payload, payload_to_string
 from utils.cache import AnalysisCache
+from agents import AgentOrchestrator
 
 logger = get_logger(__name__)
 
@@ -58,12 +59,13 @@ README内容：
 
 
 class Summarizer:
-    def __init__(self, enable_cache: bool = True, enable_router: bool = True):
+    def __init__(self, enable_cache: bool = True, enable_router: bool = True, enable_multi_agent: bool = True):
         config = get_config()
         self.max_retries = config.behavior.max_retries
         self.multimodal_config = config.multimodal
         self.cache = AnalysisCache() if enable_cache else None
         self.enable_router = enable_router
+        self.enable_multi_agent = enable_multi_agent
 
         # LLM 实例
         self.llm = ChatOpenAI(
@@ -75,6 +77,9 @@ class Summarizer:
 
         # 分类器（路由链）
         self.classifier = ProjectClassifier() if enable_router else None
+
+        # Multi-Agent 编排器
+        self.agent_orchestrator = AgentOrchestrator() if enable_multi_agent else None
 
         # 默认链（非路由模式）
         self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
@@ -163,6 +168,7 @@ class Summarizer:
         description = repo.get("description")
         readme_content = repo.get("readme_content")
         stars = repo.get("stars", 0)
+        repo_data = repo.get("repo_data", {})
 
         if not readme_content:
             return {
@@ -189,6 +195,42 @@ class Summarizer:
             emoji = get_category_emoji(category)
             logger.info(f"{emoji} 项目 {repo_name} 使用 [{category.value}] 专家链分析")
 
+        # Multi-Agent 分析（优先使用）
+        if self.enable_multi_agent and self.agent_orchestrator:
+            try:
+                logger.info(f"🤖 启动 Multi-Agent 分析: {repo_name}")
+                agent_result = await self.agent_orchestrator.analyze_project(
+                    repo_name=repo_name,
+                    repo_data=repo_data,
+                    readme_content=cleaned_content,
+                    description=description,
+                    category=category.value if category else ""
+                )
+
+                if agent_result.success:
+                    result_data = agent_result.data
+                    result = {
+                        "summary": result_data.get("summary", ""),
+                        "reasons": result_data.get("reasons", []),
+                        "tech_highlights": result_data.get("tech_highlights", []),
+                        "target_users": result_data.get("target_users", ""),
+                        "quality_score": result_data.get("quality_score", 0),
+                        "multi_agent": True,
+                    }
+                    logger.info(f"✅ Multi-Agent 分析完成: {repo_name} (质量分: {result['quality_score']})")
+
+                    # 保存到缓存
+                    if self.cache:
+                        self.cache.set(repo_name, result["summary"], result["reasons"])
+                        logger.info(f"已缓存结果: {repo_name}")
+
+                    return result
+                else:
+                    logger.warning(f"Multi-Agent 分析失败，降级到传统模式: {agent_result.error}")
+            except Exception as e:
+                logger.error(f"Multi-Agent 分析异常，降级到传统模式: {e}")
+
+        # 传统分析模式（降级方案）
         # 构建多模态 payload（智能分块）
         payload = build_multimodal_payload(
             cleaned_content,
