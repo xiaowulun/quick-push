@@ -194,20 +194,21 @@ class Notifier:
 
     def _print_messages(self, messages: List[TrendingMessage], title: str):
         print(f"\n{'='*60}")
-        print(f"📊 {title}")
+        print(f"[报告] {title}")
         print(f"{'='*60}")
         print(f"共 {len(messages)} 个热门项目\n")
 
         for i, msg in enumerate(messages, 1):
             stars_str = self._format_stars(msg.stars)
             today_str = f"+{msg.stars_today}" if msg.stars_today else "0"
-            print(f"【{i}】{msg.repo_name}")
-            print(f"⭐ {stars_str} (今日 +{today_str}) | {msg.language or 'N/A'} | {msg.url}")
-            print(f"简介: {msg.description or '无'}")
-            print(f"\n📝 项目分析:\n{msg.summary}")
-            print(f"\n🔥 爆火原因:")
+            print(f"[{i}] {msg.repo_name}")
+            print(f"* Stars: {stars_str} (今日 +{today_str}) | 语言: {msg.language or 'N/A'}")
+            print(f"* URL: {msg.url}")
+            print(f"* 简介: {msg.description or '无'}")
+            print(f"\n* 项目分析:\n{msg.summary}")
+            print(f"\n* 爆火原因:")
             for reason in msg.reasons:
-                print(f"  • {reason}")
+                print(f"  - {reason}")
             print("-" * 60)
 
     def _format_stars(self, stars: int) -> str:

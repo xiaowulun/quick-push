@@ -22,6 +22,10 @@ class Repo:
     forks: int
     stars_today: int
     readme: Optional[str] = None
+    # 新增字段
+    topics: List[str] = None
+    has_pages: bool = False
+    license_key: Optional[str] = None
 
 
 class GitHubFetcher:
@@ -47,8 +51,39 @@ class GitHubFetcher:
     ) -> list[Repo]:
         repos = self._fetch_from_trending_page(language, since, limit)
         if repos:
-            asyncio.run(self._fetch_readmes_async(repos))
+            asyncio.run(self._enrich_repos_async(repos))
         return repos
+
+    async def _enrich_repos_async(self, repos: list[Repo]) -> None:
+        """并发获取 README 和补充字段"""
+        await asyncio.gather(
+            self._fetch_readmes_async(repos),
+            self._fetch_repo_details_async(repos)
+        )
+
+    async def _fetch_repo_details_async(self, repos: list[Repo], max_concurrency: int = 10) -> None:
+        """调用 GitHub API 获取项目详情（topics, has_pages, license）"""
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def fetch_single(session: aiohttp.ClientSession, repo: Repo) -> None:
+            async with semaphore:
+                url = f"{self.api_base}/repos/{repo.full_name}"
+                try:
+                    async with session.get(url, headers=self.headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            repo.topics = data.get("topics", [])
+                            repo.has_pages = data.get("has_pages", False)
+                            repo.license_key = data.get("license", {}).get("key") if data.get("license") else None
+                            logger.debug(f"获取项目详情成功: {repo.full_name}, topics={repo.topics}")
+                        else:
+                            logger.warning(f"获取项目详情失败: {repo.full_name}, status={resp.status}")
+                except Exception as e:
+                    logger.error(f"获取项目详情异常: {repo.full_name}, error={e}")
+
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            tasks = [fetch_single(session, repo) for repo in repos]
+            await asyncio.gather(*tasks)
 
     async def _fetch_readmes_async(self, repos: list[Repo], max_concurrency: int = 10) -> None:
         semaphore = asyncio.Semaphore(max_concurrency)

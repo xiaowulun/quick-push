@@ -32,7 +32,14 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
             "repo_name": repo.full_name,
             "description": repo.description,
             "readme_content": repo.readme,
-            "stars": repo.stars
+            "repo_data": {
+                "stars": repo.stars,
+                "language": repo.language,
+                "description": repo.description,
+                "topics": repo.topics if repo.topics else [],
+                "has_pages": repo.has_pages,
+                "license": repo.license_key,
+            }
         }
         for repo in repos
     ]

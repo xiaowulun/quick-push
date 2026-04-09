@@ -59,13 +59,15 @@ README内容：
 
 
 class Summarizer:
-    def __init__(self, enable_cache: bool = True, enable_router: bool = True, enable_multi_agent: bool = True):
+    def __init__(self, enable_cache: bool = True):
         config = get_config()
         self.max_retries = config.behavior.max_retries
         self.multimodal_config = config.multimodal
         self.cache = AnalysisCache() if enable_cache else None
-        self.enable_router = enable_router
-        self.enable_multi_agent = enable_multi_agent
+        
+        # 从配置读取功能开关
+        self.enable_router = config.behavior.enable_router
+        self.enable_multi_agent = config.behavior.enable_multi_agent
 
         # LLM 实例
         self.llm = ChatOpenAI(
@@ -76,10 +78,10 @@ class Summarizer:
         )
 
         # 分类器（路由链）
-        self.classifier = ProjectClassifier() if enable_router else None
+        self.classifier = ProjectClassifier() if self.enable_router else None
 
         # Multi-Agent 编排器
-        self.agent_orchestrator = AgentOrchestrator() if enable_multi_agent else None
+        self.agent_orchestrator = AgentOrchestrator() if self.enable_multi_agent else None
 
         # 默认链（非路由模式）
         self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
@@ -212,12 +214,9 @@ class Summarizer:
                     result = {
                         "summary": result_data.get("summary", ""),
                         "reasons": result_data.get("reasons", []),
-                        "tech_highlights": result_data.get("tech_highlights", []),
-                        "target_users": result_data.get("target_users", ""),
-                        "quality_score": result_data.get("quality_score", 0),
                         "multi_agent": True,
                     }
-                    logger.info(f"✅ Multi-Agent 分析完成: {repo_name} (质量分: {result['quality_score']})")
+                    logger.info(f"✅ Multi-Agent 分析完成: {repo_name}")
 
                     # 保存到缓存
                     if self.cache:

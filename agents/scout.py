@@ -1,42 +1,66 @@
 """
 Scout Agent - 趋势情报侦察员
 
-负责分析项目的"八卦"和趋势：
-- 为什么突然火了？（时间维度分析）
-- 社区讨论热点
-- 技术趋势关联
-- 竞品对比优势
-- 潜在爆火因素
+基于外部搜索数据 + LLM 推理，提供主观的趋势分析。
 """
 
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-import re
+
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
 
 from agents.base import BaseAgent, AgentResult
+from tools.search_tools import SearchAggregator
 from core.config import get_config
 
 logger = logging.getLogger(__name__)
 
 
-class ScoutAgent(BaseAgent):
-    """趋势情报侦察员 - 专注"八卦"和趋势分析"""
+class CommunitySentiment(BaseModel):
+    """社区热度评估"""
+    heat_level: str = Field(description="热度等级：high/medium/low/unknown")
+    atmosphere: str = Field(description="氛围：positive/neutral/mixed/unknown")
+    key_topics: List[str] = Field(description="讨论最多的话题，2-3个")
 
-    def __init__(self, config: Optional[Dict] = None):
-        super().__init__("ScoutAgent", config)
+
+class ScoutAnalysis(BaseModel):
+    """Scout 分析结果"""
+    popularity_analysis: List[str] = Field(description="3-5条爆火原因分析，每条简洁有力")
+    trend_alignment: str = Field(description="契合的技术趋势，1-2句话")
+    community_sentiment: CommunitySentiment
+    competitive_advantage: str = Field(description="竞争优势，1-2句话")
+    potential_concerns: List[str] = Field(description="潜在风险，1-2条，如无则留空")
+
+
+class ScoutAgent(BaseAgent):
+    """
+    趋势情报侦察员 - 智能分析版本
+    """
+
+    def __init__(self):
+        super().__init__("ScoutAgent")
+        config = get_config()
+        self.searcher = SearchAggregator(github_token=config.github.token)
+        self.llm = ChatOpenAI(
+            api_key=config.openai.api_key,
+            base_url=config.openai.base_url,
+            model_name=config.openai.model,
+            temperature=0.7
+        )
 
     async def execute(self, context: Dict[str, Any]) -> AgentResult:
         """
-        分析项目趋势和爆火原因
+        执行智能趋势分析
 
         Args:
             context: {
-                "repo_name": str,
-                "repo_data": Dict,  # GitHub API 数据
-                "description": str,
-                "readme_content": str,
-                "historical_data": List[Dict],  # 历史趋势数据（可选）
+                "repo_name": "owner/repo",
+                "repo_data": {...},
+                "description": "...",
+                "readme_content": "..."
             }
         """
         self.log_start(context)
@@ -45,215 +69,121 @@ class ScoutAgent(BaseAgent):
             repo_name = context.get("repo_name", "")
             repo_data = context.get("repo_data", {})
             description = context.get("description", "")
-            readme_content = context.get("readme_content", "")
-            historical_data = context.get("historical_data", [])
+            readme = context.get("readme_content", "")
 
-            # 分析爆火因素
-            popularity_factors = self._analyze_popularity_factors(repo_data, readme_content)
+            # Step 1: 搜索外部讨论
+            logger.info(f"[Scout] 搜索 {repo_name} 的外部讨论...")
+            search_results = await self.searcher.search_project(repo_name, description)
 
-            # 分析技术趋势关联
-            trend_analysis = self._analyze_trends(repo_name, description, readme_content)
-
-            # 分析社区热度指标
-            community_buzz = self._analyze_community_buzz(repo_data, readme_content)
-
-            # 竞品对比分析
-            competitive_edge = self._analyze_competitive_edge(repo_name, description, readme_content)
-
-            result_data = {
-                "popularity_factors": popularity_factors,
-                "trend_analysis": trend_analysis,
-                "community_buzz": community_buzz,
-                "competitive_edge": competitive_edge,
-                "collected_at": datetime.now().isoformat(),
-            }
-
-            result = self.create_success_result(
-                data=result_data,
-                metadata={
-                    "repo_name": repo_name,
-                    "focus": "trend_and_gossip",
-                }
+            # Step 2: 使用 LLM 进行智能分析（Pydantic 结构化输出）
+            analysis = await self._analyze_with_llm(
+                repo_name=repo_name,
+                description=description,
+                readme=readme,
+                repo_data=repo_data,
+                search_results=search_results
             )
 
-            self.log_end(result)
-            return result
+            # 添加元数据
+            result = {
+                **analysis,
+                "search_metadata": {
+                    "has_external_data": search_results.get("has_external_discussion", False),
+                    "total_mentions": search_results.get("total_mentions", 0),
+                    "analyzed_at": datetime.now().isoformat()
+                }
+            }
+
+            self.log_end(AgentResult(success=True, data=result))
+            return self.create_success_result(result)
 
         except Exception as e:
-            error_msg = f"趋势分析失败: {str(e)}"
-            logger.error(error_msg)
-            return self.create_error_result(error_msg)
+            logger.error(f"[Scout] 分析失败: {e}")
+            return self.create_error_result(str(e))
 
-    def _analyze_popularity_factors(self, repo_data: Dict, readme: str) -> Dict:
-        """分析爆火因素 - 为什么突然火了？"""
-        factors = []
-        indicators = []
+    async def _analyze_with_llm(
+        self,
+        repo_name: str,
+        description: str,
+        readme: str,
+        repo_data: Dict,
+        search_results: Dict
+    ) -> Dict:
+        """
+        使用 LLM + Pydantic 结构化输出进行分析
+        """
+        prompt_template = """你是一位敏锐的技术趋势分析师。
 
-        stars = repo_data.get("stargazers_count", 0)
-        forks = repo_data.get("forks_count", 0)
-        created_at = repo_data.get("created_at", "")
-        topics = repo_data.get("topics", [])
+## 项目信息
+- 名称: {repo_name}
+- 描述: {description}
+- ⭐ Stars: {stars}
+- 语言: {language}
+- Topics: {topics}
 
-        # 1. 新项目爆发
-        if created_at:
-            try:
-                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                age_days = (datetime.now() - created.replace(tzinfo=None)).days
+## README 摘要
+```
+{readme_summary}
+```
 
-                if age_days < 30 and stars > 1000:
-                    factors.append("新项目爆发式增长，短时间内获得大量关注")
-                    indicators.append("new_star")
-                elif age_days < 7:
-                    factors.append("本周新项目，处于早期热度期")
-                    indicators.append("brand_new")
-            except:
-                pass
+## 外部讨论（最近7天）
+{external_discussions}
 
-        # 2. 技术热点关联
-        hot_tech_patterns = {
-            "ai": ["ai", "llm", "gpt", "claude", "openai", "machine learning", "大模型", "agent"],
-            "rust": ["rust", "高性能", "内存安全"],
-            "web3": ["web3", "blockchain", "crypto", "nft"],
-            "devops": ["kubernetes", "docker", "devops", "ci/cd"],
-        }
+## 讨论统计
+- 总提及: {total_mentions}
+- HN: {hn_count} | Reddit: {reddit_count} | GitHub: {github_count}
+- 情感: 正面{positive} 中性{neutral} 负面{negative}
 
-        readme_lower = readme.lower()
-        matched_trends = []
-        for trend, keywords in hot_tech_patterns.items():
-            if any(kw in readme_lower or kw in str(topics).lower() for kw in keywords):
-                matched_trends.append(trend)
-                indicators.append(f"trend_{trend}")
+---
 
-        if matched_trends:
-            if len(matched_trends) == 1:
-                factors.append(f"踩中{matched_trends[0].upper()}技术热点，符合当前行业趋势")
-            else:
-                factors.append(f"同时踩中多个技术热点：{', '.join(matched_trends[:2]).upper()}，复合赛道优势")
+## 你的任务
+分析这个项目为什么登上 Trending，提供：
 
-        # 从 topics 推断技术方向
-        if topics:
-            tech_topics = [t for t in topics if t not in ['python', 'javascript', 'typescript', 'java', 'go', 'rust']]
-            if tech_topics and len(factors) < 3:
-                factors.append(f"标签涵盖热门技术方向：{', '.join(tech_topics[:3])}")
-                indicators.append("hot_topics")
+1. **爆火原因** (3-5条): 为什么受关注？解决了什么痛点？踩中了什么趋势？
+   - 要结合 README 功能亮点
+   - 要有主观判断，说出"为什么"
+   - **外部讨论可能为空，这是正常的！基于 GitHub Stars、Topics 和 README 分析即可**
 
-        # 3. 大厂/名人背书
-        owner = repo_data.get("owner", {}).get("login", "")
-        big_names = ["microsoft", "google", "facebook", "apple", "amazon", "openai", "anthropic"]
-        if owner.lower() in big_names:
-            factors.append(f"{owner}官方出品，自带流量和信任度")
-            indicators.append("big_tech")
+2. **技术趋势关联**: 契合哪些当前趋势？
 
-        # 4. 解决痛点
-        pain_point_keywords = ["替代", "取代", "更快", "更简单", "轻量级", "零配置", "自动化"]
-        for kw in pain_point_keywords:
-            if kw in readme[:2000]:
-                factors.append(f"精准解决开发者痛点：{kw}")
-                indicators.append("pain_point")
-                break
+3. **社区热度**: 基于 Stars 和讨论，评估热度等级和氛围
 
-        # 5. Star/Fork 比例分析社区参与度
-        if stars > 100:
-            fork_ratio = forks / stars
-            if fork_ratio > 0.15:
-                factors.append("Fork率极高，说明开发者参与意愿强，不只是围观")
-                indicators.append("high_engagement")
+4. **竞争优势**: 相比同类项目的独特之处
 
-        return {
-            "factors": factors[:5],  # 最多5个因素
-            "indicators": indicators,
-            "hype_level": self._calculate_hype_level(stars, factors),
-        }
+5. **潜在风险**: 有无质疑或担忧？
 
-    def _analyze_trends(self, repo_name: str, description: str, readme: str) -> Dict:
-        """分析技术趋势关联"""
-        trends = []
-        text = f"{repo_name} {description} {readme[:3000]}".lower()
+**⚠️ 极度重要**:
+- 该项目已有 {stars} Stars，是热门项目
+- 外部讨论为空不代表没数据，GitHub Stars 和 README 就是数据
+- **必须给出具体分析，禁止返回"数据缺失"类表述**
+- 基于已有信息做出合理推断
+"""
 
-        # 趋势关键词映射
-        trend_keywords = {
-            "AI 应用落地": ["agent", "rag", "fine-tune", "推理", "部署"],
-            "开发者体验": ["cli", "tool", "workflow", "automation", "脚手架"],
-            "性能优化": ["fast", "lightweight", "zero-cost", "高性能", "优化"],
-            "云原生": ["cloud", "serverless", "container", "k8s", "微服务"],
-            "前端工程化": ["bundler", "vite", "webpack", "build tool"],
-        }
+        # 截断 README
+        readme_summary = readme[:1500] if readme else "README 内容较少"
 
-        for trend_name, keywords in trend_keywords.items():
-            if any(kw in text for kw in keywords):
-                trends.append(trend_name)
+        # 格式化外部讨论
+        discussions_text = search_results.get("raw_text", "暂无外部讨论数据")
+        sentiment = search_results.get("sentiment_summary", {})
 
-        return {
-            "related_trends": trends[:3],
-            "trend_fit_score": min(len(trends) * 0.3, 1.0),  # 趋势契合度
-        }
+        prompt = ChatPromptTemplate.from_template(prompt_template)
+        chain = prompt | self.llm.with_structured_output(ScoutAnalysis)
 
-    def _analyze_community_buzz(self, repo_data: Dict, readme: str) -> Dict:
-        """分析社区热度"""
-        buzz_signals = []
+        result = await chain.ainvoke({
+            "repo_name": repo_name,
+            "description": description or "暂无描述",
+            "stars": repo_data.get("stars", 0),
+            "language": repo_data.get("language", "Unknown"),
+            "topics": ", ".join(repo_data.get("topics", [])),
+            "readme_summary": readme_summary,
+            "external_discussions": discussions_text,
+            "total_mentions": search_results.get("total_mentions", 0),
+            "hn_count": search_results.get("sources", {}).get("hackernews", 0),
+            "reddit_count": search_results.get("sources", {}).get("reddit", 0),
+            "github_count": search_results.get("sources", {}).get("github_discussions", 0),
+            "positive": sentiment.get("positive", 0),
+            "neutral": sentiment.get("neutral", 0),
+            "negative": sentiment.get("negative", 0),
+        })
 
-        # 从 README 检测社区活跃度信号
-        if re.search(r"(?i)discord|slack|telegram", readme):
-            buzz_signals.append("有活跃的社区聊天群组")
-
-        if re.search(r"(?i)sponsor|赞助|捐赠", readme):
-            buzz_signals.append("已获得社区赞助支持")
-
-        if re.search(r"(?i)contributor|贡献者", readme[:5000]):
-            buzz_signals.append("强调社区贡献，生态活跃")
-
-        # 检测是否有媒体/博客推荐
-        media_keywords = ["featured", "trending", "awesome", "推荐", "精选"]
-        for kw in media_keywords:
-            if kw in readme.lower():
-                buzz_signals.append("被技术媒体或 Awesome 列表推荐")
-                break
-
-        return {
-            "buzz_signals": buzz_signals,
-            "community_health": len(buzz_signals) / 3,  # 社区健康度
-        }
-
-    def _analyze_competitive_edge(self, repo_name: str, description: str, readme: str) -> Dict:
-        """分析竞争优势"""
-        edges = []
-        text = readme[:4000].lower()
-
-        # 对比优势关键词
-        comparison_patterns = [
-            (r"(?i)faster than|比.*快|性能提升|加速", "性能优势"),
-            (r"(?i)lighter|更轻量|体积小|minimal", "轻量优势"),
-            (r"(?i)simpler|更简单|易用|零配置", "易用性优势"),
-            (r"(?i)vs\.|versus|对比|compared to|alternative to", "对标竞品"),
-            (r"(?i)unlike|不同于|区别于", "差异化优势"),
-        ]
-
-        for pattern, label in comparison_patterns:
-            if re.search(pattern, text):
-                edges.append(label)
-
-        # 独特功能
-        unique_features = []
-        if re.search(r"(?i)first|首个|唯一|首创", text):
-            unique_features.append("首创功能")
-        if re.search(r"(?i)open source|开源|free", text):
-            unique_features.append("开源免费")
-
-        return {
-            "competitive_edges": edges[:3],
-            "unique_features": unique_features,
-            "differentiation_score": min((len(edges) + len(unique_features)) * 0.25, 1.0),
-        }
-
-    def _calculate_hype_level(self, stars: int, factors: List[str]) -> str:
-        """计算炒作热度等级"""
-        if len(factors) >= 4 and stars > 10000:
-            return "viral"  # 病毒式传播
-        elif len(factors) >= 3 and stars > 5000:
-            return "hot"    # 很火
-        elif len(factors) >= 2 and stars > 1000:
-            return "trending"  #  trending
-        elif len(factors) >= 1:
-            return "rising"   # 上升期
-        else:
-            return "stable"   # 稳定
+        return result.model_dump()
