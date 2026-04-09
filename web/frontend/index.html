@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickPush - GitHub Trending 智能分析</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0F0F0F;
+            color: #E5E5E5;
+            overflow: hidden;
+        }
+        
+        .app-container {
+            height: 100vh;
+            display: flex;
+        }
+        
+        .sidebar {
+            width: 240px;
+            background: #1A1A1A;
+            border-right: 1px solid #2A2A2A;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #2A2A2A;
+        }
+        
+        .logo {
+            font-size: 18px;
+            font-weight: 600;
+            color: #FF6D5A;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .sidebar-nav {
+            padding: 16px 12px;
+            flex: 1;
+        }
+        
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            color: #A0A0A0;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+            margin-bottom: 4px;
+            cursor: pointer;
+        }
+        
+        .nav-item:hover {
+            background: #252525;
+            color: #E5E5E5;
+        }
+        
+        .nav-item.active {
+            background: #FF6D5A;
+            color: white;
+        }
+        
+        .nav-item svg {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+        
+        .main-content {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .main-header {
+            padding: 20px 32px;
+            border-bottom: 1px solid #2A2A2A;
+            background: #1A1A1A;
+        }
+        
+        .page-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #E5E5E5;
+        }
+        
+        .page-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px 32px;
+        }
+        
+        .page {
+            display: none;
+        }
+        
+        .page.active {
+            display: block;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #1A1A1A 0%, #252525 100%);
+            border: 1px solid #2A2A2A;
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #FF6D5A, #FFB84D);
+        }
+        
+        .stat-value {
+            font-size: 32px;
+            font-weight: 600;
+            color: #FF6D5A;
+            margin-bottom: 8px;
+        }
+        
+        .stat-label {
+            font-size: 13px;
+            color: #666;
+        }
+        
+        .category-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+        
+        .category-card {
+            background: #1A1A1A;
+            border: 1px solid #2A2A2A;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        
+        .category-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        
+        .category-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #E5E5E5;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .category-count {
+            font-size: 12px;
+            color: #666;
+            background: #252525;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .projects-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .project-item {
+            background: #252525;
+            border: 1px solid #2A2A2A;
+            border-radius: 8px;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .project-item:hover {
+            border-color: #FF6D5A;
+            background: #2A2A2A;
+        }
+        
+        .project-item.expanded {
+            padding: 16px;
+        }
+        
+        .project-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .project-name {
+            font-size: 14px;
+            font-weight: 500;
+            color: #E5E5E5;
+            text-decoration: none;
+            flex: 1;
+            display: inline-block;
+            cursor: pointer;
+            padding: 2px 4px;
+            margin: -2px -4px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        
+        .project-name:hover {
+            color: #FF6D5A;
+            background: rgba(255, 109, 90, 0.1);
+        }
+        
+        .project-stars {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            color: #FFB84D;
+            font-weight: 500;
+            font-size: 13px;
+        }
+        
+        .project-details {
+            display: none;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #2A2A2A;
+        }
+        
+        .project-item.expanded .project-details {
+            display: block;
+        }
+        
+        .project-summary {
+            font-size: 13px;
+            color: #A0A0A0;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+        
+        .project-reasons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        
+        .reason-tag {
+            font-size: 11px;
+            padding: 4px 8px;
+            background: #1A1A1A;
+            border: 1px solid #2A2A2A;
+            border-radius: 4px;
+            color: #A0A0A0;
+        }
+        
+        .project-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .trends-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+        
+        .chart-card {
+            background: #1A1A1A;
+            border: 1px solid #2A2A2A;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        
+        .chart-card.full-width {
+            grid-column: 1 / -1;
+        }
+        
+        .chart-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #E5E5E5;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 250px;
+        }
+        
+        .language-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .language-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .language-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        
+        .language-info {
+            flex: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .language-name {
+            font-size: 13px;
+            color: #E5E5E5;
+        }
+        
+        .language-count {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .language-bar {
+            flex: 1;
+            height: 6px;
+            background: #252525;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-left: 12px;
+        }
+        
+        .language-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+        
+        .ranking-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .ranking-item {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 16px;
+            background: #252525;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        
+        .ranking-item:hover {
+            background: #2A2A2A;
+            transform: translateX(4px);
+        }
+        
+        .rank-number {
+            font-size: 16px;
+            font-weight: 700;
+            width: 32px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        .rank-1 { color: #FFD700; }
+        .rank-2 { color: #C0C0C0; }
+        .rank-3 { color: #CD7F32; }
+        .rank-other { color: #666; }
+        
+        .rank-content {
+            flex: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .rank-project {
+            font-size: 14px;
+            color: #E5E5E5;
+            font-weight: 500;
+        }
+        
+        .rank-stats {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .rank-badge {
+            background: #FF6D5A;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        @media (max-width: 1024px) {
+            .sidebar {
+                width: 200px;
+            }
+            
+            .category-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .trends-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                    QuickPush
+                </div>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <a class="nav-item active" onclick="showPage('dashboard')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7" rx="1"/>
+                        <rect x="14" y="3" width="7" height="7" rx="1"/>
+                        <rect x="3" y="14" width="7" height="7" rx="1"/>
+                        <rect x="14" y="14" width="7" height="7" rx="1"/>
+                    </svg>
+                    仪表盘
+                </a>
+                <a class="nav-item" onclick="showPage('trends')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18 9l-5 5-4-4-3 3"/>
+                    </svg>
+                    趋势分析
+                </a>
+            </nav>
+        </div>
+        
+        <div class="main-content">
+            <div class="main-header">
+                <h1 class="page-title" id="page-title">仪表盘</h1>
+            </div>
+            
+            <div class="page-container">
+                <div id="dashboard-page" class="page active">
+                    <div id="dashboard-content">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+                
+                <div id="trends-page" class="page">
+                    <div id="trends-content">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = window.location.hostname === 'localhost' 
+            ? 'http://localhost:8000/api' 
+            : '/api';
+        let categoryChart = null;
+        
+        function showPage(pageName) {
+            document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(a => a.classList.remove('active'));
+            
+            document.getElementById(`${pageName}-page`).classList.add('active');
+            event.target.closest('.nav-item').classList.add('active');
+            
+            const titles = {
+                'dashboard': '仪表盘',
+                'trends': '趋势分析'
+            };
+            document.getElementById('page-title').textContent = titles[pageName];
+            
+            if (pageName === 'dashboard') {
+                loadDashboard();
+            } else if (pageName === 'trends') {
+                loadTrends();
+            }
+        }
+        
+        async function loadDashboard() {
+            const container = document.getElementById('dashboard-content');
+            
+            try {
+                const response = await fetch(`${API_BASE}/dashboard`);
+                const data = await response.json();
+                
+                const categories = {
+                    'ai_ecosystem': 'AI 生态',
+                    'dev_tools': '开发工具',
+                    'infrastructure': '基础设施',
+                    'product_and_ui': '产品与 UI'
+                };
+                
+                const totalProjects = Object.values(data).flat().length;
+                
+                let html = `
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value">${totalProjects}</div>
+                            <div class="stat-label">总项目数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${Object.keys(categories).filter(k => data[k] && data[k].length > 0).length}</div>
+                            <div class="stat-label">活跃分类</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${data.ai_ecosystem ? data.ai_ecosystem.length : 0}</div>
+                            <div class="stat-label">AI 项目</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${data.dev_tools ? data.dev_tools.length : 0}</div>
+                            <div class="stat-label">开发工具</div>
+                        </div>
+                    </div>
+                    
+                    <div class="category-grid">
+                `;
+                
+                for (const [key, title] of Object.entries(categories)) {
+                    const projects = data[key];
+                    if (projects && projects.length > 0) {
+                        html += createCategoryCard(key, title, projects);
+                    }
+                }
+                
+                html += '</div>';
+                
+                container.innerHTML = html || '<div class="empty-state">暂无数据</div>';
+            } catch (error) {
+                container.innerHTML = `<div class="empty-state">加载失败: ${error.message}</div>`;
+            }
+        }
+        
+        function createCategoryCard(key, title, projects) {
+            const count = projects.length;
+            
+            return `
+                <div class="category-card">
+                    <div class="category-header">
+                        <div class="category-title">
+                            ${title}
+                            <span class="category-count">${count} 个项目</span>
+                        </div>
+                    </div>
+                    <div class="projects-list">
+                        ${projects.map((project, index) => createProjectItem(project, index, key)).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        function createProjectItem(project, index, categoryKey) {
+            const stars = formatStars(project.stars);
+            const reasons = project.reasons.slice(0, 3).map(r => `<span class="reason-tag">${r}</span>`).join('');
+            
+            return `
+                <div class="project-item" onclick="toggleProject(this)">
+                    <div class="project-header">
+                        <a class="project-name" href="${project.url}" target="_blank">
+                            ${project.repo_name}
+                        </a>
+                        <div class="project-stars">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                            </svg>
+                            ${stars}
+                        </div>
+                    </div>
+                    <div class="project-details">
+                        <div class="project-summary">${project.summary}</div>
+                        <div class="project-reasons">${reasons}</div>
+                        <div class="project-meta">
+                            <span>${project.language}</span>
+                            <span>+${project.stars_today} 今日</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function toggleProject(element) {
+            const isExpanded = element.classList.contains('expanded');
+            
+            document.querySelectorAll('.project-item.expanded').forEach(item => {
+                item.classList.remove('expanded');
+            });
+            
+            if (!isExpanded) {
+                element.classList.add('expanded');
+            }
+        }
+        
+        function formatStars(stars) {
+            if (stars >= 10000) {
+                return (stars / 10000).toFixed(1) + '万';
+            } else if (stars >= 1000) {
+                return (stars / 1000).toFixed(1) + 'k';
+            }
+            return stars;
+        }
+        
+        async function loadTrends() {
+            const container = document.getElementById('trends-content');
+            
+            try {
+                const response = await fetch(`${API_BASE}/trends?days=7`);
+                const data = await response.json();
+                
+                const maxLanguageCount = Math.max(...data.language_trends.map(l => l.count));
+                const languageColors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'];
+                
+                let html = `
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value">${data.total_projects}</div>
+                            <div class="stat-label">项目总数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${data.total_records}</div>
+                            <div class="stat-label">记录总数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${data.category_trends.length}</div>
+                            <div class="stat-label">分类数量</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${data.language_trends.length}</div>
+                            <div class="stat-label">语言种类</div>
+                        </div>
+                    </div>
+                    
+                    <div class="trends-grid">
+                        <div class="chart-card">
+                            <div class="chart-title">分类趋势</div>
+                            <div class="chart-container">
+                                <canvas id="categoryChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">语言分布</div>
+                            <div class="language-list">
+                                ${data.language_trends.slice(0, 10).map((lang, index) => `
+                                    <div class="language-item">
+                                        <div class="language-color" style="background: ${languageColors[index % languageColors.length]}"></div>
+                                        <div class="language-info">
+                                            <span class="language-name">${lang.language}</span>
+                                            <span class="language-count">${lang.count}</span>
+                                        </div>
+                                        <div class="language-bar">
+                                            <div class="language-bar-fill" style="width: ${(lang.count / maxLanguageCount * 100)}%; background: ${languageColors[index % languageColors.length]}"></div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                        
+                        <div class="chart-card full-width">
+                            <div class="chart-title">热门项目排行 TOP 10</div>
+                            <div class="ranking-list">
+                                ${data.hot_projects.slice(0, 10).map((proj, index) => `
+                                    <div class="ranking-item">
+                                        <div class="rank-number ${index < 3 ? 'rank-' + (index + 1) : 'rank-other'}">${index + 1}</div>
+                                        <div class="rank-content">
+                                            <span class="rank-project">${proj.repo_name}</span>
+                                            <div class="rank-stats">
+                                                <span class="rank-badge">${proj.appearances} 次</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                container.innerHTML = html;
+                
+                createCategoryChart(data);
+            } catch (error) {
+                container.innerHTML = `<div class="empty-state">加载失败: ${error.message}</div>`;
+            }
+        }
+        
+        function createCategoryChart(data) {
+            if (categoryChart) categoryChart.destroy();
+            
+            const colors = ['#FF6D5A', '#FFB84D', '#4ECDC4', '#95E1D3', '#F38181'];
+            
+            const categoryCtx = document.getElementById('categoryChart').getContext('2d');
+            categoryChart = new Chart(categoryCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.category_trends.map(c => getCategoryName(c.category)),
+                    datasets: [{
+                        data: data.category_trends.map(c => c.count),
+                        backgroundColor: colors,
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#E5E5E5',
+                                font: { size: 14, weight: '500' },
+                                padding: 16
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function getCategoryName(category) {
+            const names = {
+                'ai_ecosystem': 'AI 生态',
+                'dev_tools': '开发工具',
+                'infrastructure': '基础设施',
+                'product_and_ui': '产品与 UI',
+                'knowledge_base': '知识库',
+                'unknown': '未分类'
+            };
+            return names[category] || category;
+        }
+        
+        loadDashboard();
+    </script>
+</body>
+</html>
