@@ -1,17 +1,27 @@
 from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 from typing import Optional
 from datetime import date, timedelta
 import sys
 import os
+import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from utils.cache import AnalysisCache
-from ..models import DashboardResponse, ProjectCard, TrendsResponse, CategoryTrend, LanguageTrend, HotProject
+from services.search_service import SearchService
+from services.chat_service import RAGChatService
+from ..models import (
+    DashboardResponse, ProjectCard, TrendsResponse, CategoryTrend, 
+    LanguageTrend, HotProject, SearchResponse, SearchResult,
+    ChatRequest, ChatResponse
+)
 
 router = APIRouter(prefix="/api", tags=["api"])
 
 cache = AnalysisCache()
+search_service = SearchService()
+chat_service = RAGChatService()
 
 @router.get("/dashboard", response_model=DashboardResponse)
 async def get_dashboard():
@@ -144,4 +154,128 @@ async def get_trends(days: int = Query(7, ge=1, le=30)):
         hot_projects=hot_projects,
         total_projects=len(project_appearances),
         total_records=total
+    )
+
+@router.get("/search", response_model=SearchResponse)
+async def search_projects(
+    q: str = Query(..., min_length=1, description="搜索关键词"),
+    top_k: int = Query(10, ge=1, le=50, description="返回结果数量"),
+    threshold: float = Query(0.3, ge=0.0, le=1.0, description="相似度阈值"),
+    use_hybrid: bool = Query(True, description="是否使用混合搜索")
+):
+    """
+    智能搜索项目
+    
+    - **q**: 搜索关键词，支持自然语言查询
+    - **top_k**: 返回结果数量，默认10个
+    - **threshold**: 相似度阈值，默认0.3
+    - **use_hybrid**: 是否使用混合搜索（向量+关键词），默认True
+    """
+    
+    results = await search_service.search_projects(
+        query=q,
+        top_k=top_k,
+        threshold=threshold,
+        use_hybrid=use_hybrid
+    )
+    
+    search_results = [
+        SearchResult(
+            repo_full_name=result.get("repo_full_name", ""),
+            summary=result.get("summary", ""),
+            reasons=result.get("reasons", []),
+            similarity=result.get("similarity", 0.0),
+            category=result.get("category"),
+            language=result.get("language"),
+            stars=result.get("stars"),
+            keywords=result.get("keywords", []),
+            tech_stack=result.get("tech_stack", []),
+            use_cases=result.get("use_cases", [])
+        )
+        for result in results
+    ]
+    
+    return SearchResponse(
+        query=q,
+        results=search_results,
+        total=len(search_results)
+    )
+
+@router.post("/search/index")
+async def index_projects():
+    """重新索引所有项目（生成向量）"""
+    
+    stats = await search_service.reindex_all_projects()
+    
+    return {
+        "message": "索引完成",
+        "stats": stats
+    }
+
+@router.get("/search/stats")
+async def get_search_stats():
+    """获取搜索统计信息"""
+    
+    stats = search_service.get_search_stats()
+    
+    return stats
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """
+    智能对话（非流式）
+    
+    基于用户问题检索相关项目，生成智能回答
+    """
+    
+    result = await chat_service.chat(
+        query=request.query,
+        top_k=request.top_k,
+        threshold=request.threshold
+    )
+    
+    return ChatResponse(
+        answer=result["answer"],
+        projects=[
+            ChatProject(
+                repo_full_name=p["repo_full_name"],
+                summary=p["summary"],
+                similarity=p["similarity"],
+                language=p.get("language"),
+                stars=p.get("stars"),
+                url=p["url"]
+            )
+            for p in result["projects"]
+        ],
+        success=result["success"]
+    )
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    智能对话（流式输出）
+    
+    基于用户问题检索相关项目，流式生成智能回答
+    使用 Server-Sent Events (SSE) 格式
+    """
+    
+    async def generate():
+        async for chunk in chat_service.chat_stream(
+            query=request.query,
+            top_k=request.top_k,
+            threshold=request.threshold
+        ):
+            data = json.dumps(chunk, ensure_ascii=False)
+            yield f"data: {data}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )

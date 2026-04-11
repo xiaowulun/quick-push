@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuickPush - GitHub Trending 智能分析</title>
+    <title>QuickPush - GitHub Trending 智能助手</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -17,9 +18,29 @@
         
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: #0F0F0F;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%);
             color: #E5E5E5;
             overflow: hidden;
+            font-size: 13px;
+            min-height: 100vh;
+        }
+        
+        ::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: rgba(123, 104, 238, 0.3);
+            border-radius: 10px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(123, 104, 238, 0.5);
         }
         
         .app-container {
@@ -28,26 +49,48 @@
         }
         
         .sidebar {
-            width: 240px;
-            background: #1A1A1A;
-            border-right: 1px solid #2A2A2A;
+            width: 260px;
+            background: rgba(20, 20, 30, 0.8);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
             display: flex;
             flex-direction: column;
             flex-shrink: 0;
         }
         
         .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid #2A2A2A;
+            padding: 24px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
         
         .logo {
-            font-size: 18px;
-            font-weight: 600;
-            color: #FF6D5A;
             display: flex;
+            flex-direction: column;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
+            text-align: center;
+        }
+        
+        .logo-icon {
+            width: 80px;
+            height: 80px;
+            position: relative;
+        }
+        
+        .logo-icon svg {
+            width: 100%;
+            height: 100%;
+            filter: drop-shadow(0 0 20px rgba(100, 150, 255, 0.4)) drop-shadow(0 0 40px rgba(180, 100, 255, 0.3));
+        }
+        
+        .logo-text {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #4A90D9, #B46BFF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 1px;
         }
         
         .sidebar-nav {
@@ -59,30 +102,49 @@
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 10px 12px;
-            border-radius: 8px;
-            color: #A0A0A0;
+            padding: 12px 16px;
+            border-radius: 12px;
+            color: #888;
             text-decoration: none;
             font-size: 14px;
             font-weight: 500;
-            transition: all 0.2s;
+            transition: all 0.3s ease;
             margin-bottom: 4px;
             cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .nav-item::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, rgba(74, 144, 217, 0.1), rgba(180, 107, 255, 0.1));
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
         
         .nav-item:hover {
-            background: #252525;
             color: #E5E5E5;
+            background: rgba(255, 255, 255, 0.03);
+        }
+        
+        .nav-item:hover::before {
+            opacity: 1;
         }
         
         .nav-item.active {
-            background: #FF6D5A;
-            color: white;
+            background: linear-gradient(135deg, rgba(74, 144, 217, 0.2), rgba(180, 107, 255, 0.1));
+            color: #7B68EE;
+            border: 1px solid rgba(123, 104, 238, 0.3);
         }
         
         .nav-item svg {
-            width: 18px;
-            height: 18px;
+            width: 20px;
+            height: 20px;
             flex-shrink: 0;
         }
         
@@ -95,12 +157,13 @@
         
         .main-header {
             padding: 20px 32px;
-            border-bottom: 1px solid #2A2A2A;
-            background: #1A1A1A;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            background: rgba(20, 20, 30, 0.5);
+            backdrop-filter: blur(10px);
         }
         
         .page-title {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 600;
             color: #E5E5E5;
         }
@@ -127,12 +190,20 @@
         }
         
         .stat-card {
-            background: linear-gradient(135deg, #1A1A1A 0%, #252525 100%);
-            border: 1px solid #2A2A2A;
-            border-radius: 12px;
-            padding: 20px;
+            background: rgba(30, 30, 45, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
             position: relative;
             overflow: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(123, 104, 238, 0.3);
+            box-shadow: 0 10px 40px rgba(123, 104, 238, 0.1);
         }
         
         .stat-card::before {
@@ -142,13 +213,16 @@
             left: 0;
             right: 0;
             height: 3px;
-            background: linear-gradient(90deg, #FF6D5A, #FFB84D);
+            background: linear-gradient(90deg, #4A90D9, #7B68EE, #B46BFF);
         }
         
         .stat-value {
-            font-size: 32px;
-            font-weight: 600;
-            color: #FF6D5A;
+            font-size: 36px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #4A90D9, #7B68EE, #B46BFF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
             margin-bottom: 8px;
         }
         
@@ -164,10 +238,16 @@
         }
         
         .category-card {
-            background: #1A1A1A;
-            border: 1px solid #2A2A2A;
-            border-radius: 12px;
+            background: rgba(30, 30, 45, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
             padding: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .category-card:hover {
+            border-color: rgba(255, 109, 90, 0.2);
         }
         
         .category-header {
@@ -189,9 +269,9 @@
         .category-count {
             font-size: 12px;
             color: #666;
-            background: #252525;
-            padding: 4px 8px;
-            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 4px 10px;
+            border-radius: 20px;
         }
         
         .projects-list {
@@ -203,17 +283,18 @@
         }
         
         .project-item {
-            background: #252525;
-            border: 1px solid #2A2A2A;
-            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
             padding: 12px 16px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s ease;
         }
         
         .project-item:hover {
-            border-color: #FF6D5A;
-            background: #2A2A2A;
+            border-color: rgba(123, 104, 238, 0.3);
+            background: rgba(123, 104, 238, 0.05);
+            transform: translateX(4px);
         }
         
         .project-item.expanded {
@@ -231,26 +312,34 @@
             font-size: 14px;
             font-weight: 500;
             color: #E5E5E5;
-            text-decoration: none;
             flex: 1;
             display: inline-block;
             cursor: pointer;
-            padding: 2px 4px;
-            margin: -2px -4px;
-            border-radius: 4px;
+            padding: 2px 6px;
+            margin: -2px -6px;
+            border-radius: 6px;
             transition: all 0.2s;
         }
         
         .project-name:hover {
-            color: #FF6D5A;
-            background: rgba(255, 109, 90, 0.1);
+            color: #7B68EE;
+            background: rgba(123, 104, 238, 0.1);
+        }
+        
+        .project-name a {
+            color: inherit;
+            text-decoration: none;
+        }
+        
+        .project-name a:hover {
+            color: #7B68EE;
         }
         
         .project-stars {
             display: flex;
             align-items: center;
             gap: 4px;
-            color: #FFB84D;
+            color: #7B68EE;
             font-weight: 500;
             font-size: 13px;
         }
@@ -259,7 +348,7 @@
             display: none;
             margin-top: 12px;
             padding-top: 12px;
-            border-top: 1px solid #2A2A2A;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
         }
         
         .project-item.expanded .project-details {
@@ -268,7 +357,7 @@
         
         .project-summary {
             font-size: 13px;
-            color: #A0A0A0;
+            color: #888;
             line-height: 1.6;
             margin-bottom: 12px;
         }
@@ -282,11 +371,11 @@
         
         .reason-tag {
             font-size: 11px;
-            padding: 4px 8px;
-            background: #1A1A1A;
-            border: 1px solid #2A2A2A;
-            border-radius: 4px;
-            color: #A0A0A0;
+            padding: 4px 10px;
+            background: rgba(123, 104, 238, 0.1);
+            border: 1px solid rgba(123, 104, 238, 0.2);
+            border-radius: 20px;
+            color: #7B68EE;
         }
         
         .project-meta {
@@ -303,9 +392,10 @@
         }
         
         .chart-card {
-            background: #1A1A1A;
-            border: 1px solid #2A2A2A;
-            border-radius: 12px;
+            background: rgba(30, 30, 45, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
             padding: 20px;
         }
         
@@ -340,7 +430,7 @@
         .language-color {
             width: 12px;
             height: 12px;
-            border-radius: 3px;
+            border-radius: 50%;
             flex-shrink: 0;
         }
         
@@ -363,16 +453,16 @@
         
         .language-bar {
             flex: 1;
-            height: 6px;
-            background: #252525;
-            border-radius: 3px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 2px;
             overflow: hidden;
             margin-left: 12px;
         }
         
         .language-bar-fill {
             height: 100%;
-            border-radius: 3px;
+            border-radius: 2px;
             transition: width 0.5s ease;
         }
         
@@ -387,13 +477,13 @@
             align-items: center;
             gap: 16px;
             padding: 12px 16px;
-            background: #252525;
-            border-radius: 8px;
-            transition: all 0.2s;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            transition: all 0.3s ease;
         }
         
         .ranking-item:hover {
-            background: #2A2A2A;
+            background: rgba(123, 104, 238, 0.05);
             transform: translateX(4px);
         }
         
@@ -405,9 +495,9 @@
             flex-shrink: 0;
         }
         
-        .rank-1 { color: #FFD700; }
-        .rank-2 { color: #C0C0C0; }
-        .rank-3 { color: #CD7F32; }
+        .rank-1 { color: #FFD700; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+        .rank-2 { color: #C0C0C0; text-shadow: 0 0 10px rgba(192, 192, 192, 0.5); }
+        .rank-3 { color: #CD7F32; text-shadow: 0 0 10px rgba(205, 127, 50, 0.5); }
         .rank-other { color: #666; }
         
         .rank-content {
@@ -430,10 +520,10 @@
         }
         
         .rank-badge {
-            background: #FF6D5A;
+            background: linear-gradient(135deg, #4A90D9, #7B68EE);
             color: white;
-            padding: 4px 10px;
-            border-radius: 12px;
+            padding: 4px 12px;
+            border-radius: 20px;
             font-size: 12px;
             font-weight: 500;
         }
@@ -448,6 +538,352 @@
             text-align: center;
             padding: 40px;
             color: #666;
+        }
+
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 140px);
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .chat-message {
+            display: flex;
+            gap: 12px;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .chat-message.user {
+            flex-direction: row-reverse;
+        }
+        
+        .chat-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 16px;
+        }
+        
+        .chat-message.assistant .chat-avatar {
+            background: linear-gradient(135deg, #4A90D9, #7B68EE, #B46BFF);
+            box-shadow: 0 4px 15px rgba(123, 104, 238, 0.3);
+        }
+        
+        .chat-message.user .chat-avatar {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .chat-bubble {
+            max-width: 75%;
+            padding: 14px 18px;
+            border-radius: 20px;
+            line-height: 1.6;
+        }
+        
+        .chat-message.assistant .chat-bubble {
+            background: rgba(30, 30, 45, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom-left-radius: 6px;
+        }
+        
+        .chat-message.user .chat-bubble {
+            background: linear-gradient(135deg, #4A90D9, #7B68EE);
+            color: white;
+            border-bottom-right-radius: 6px;
+            box-shadow: 0 4px 15px rgba(123, 104, 238, 0.3);
+        }
+        
+        .chat-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #888;
+            font-size: 13px;
+            padding: 8px 0;
+        }
+        
+        .chat-status .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(123, 104, 238, 0.2);
+            border-top-color: #7B68EE;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .chat-referenced-projects {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .chat-referenced-projects-title {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 12px;
+        }
+        
+        .chat-project-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .chat-project-card:hover {
+            border-color: rgba(123, 104, 238, 0.3);
+            background: rgba(123, 104, 238, 0.05);
+            transform: translateX(4px);
+        }
+        
+        .chat-project-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+        
+        .chat-project-card-name {
+            font-weight: 500;
+            color: #E5E5E5;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        
+        .chat-project-card-name:hover {
+            color: #7B68EE;
+        }
+        
+        .chat-project-card-similarity {
+            font-size: 11px;
+            color: #7B68EE;
+            background: rgba(123, 104, 238, 0.1);
+            padding: 3px 10px;
+            border-radius: 20px;
+        }
+        
+        .chat-project-card-summary {
+            font-size: 12px;
+            color: #888;
+            line-height: 1.5;
+        }
+        
+        .chat-input-container {
+            padding: 24px;
+            background: transparent;
+        }
+        
+        .chat-input-wrapper {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            max-width: 700px;
+            margin: 0 auto;
+            background: rgba(30, 30, 45, 0.8);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 28px;
+            padding: 6px 6px 6px 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .chat-input-wrapper:focus-within {
+            border-color: rgba(123, 104, 238, 0.5);
+            box-shadow: 0 0 30px rgba(123, 104, 238, 0.15);
+        }
+        
+        .chat-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            padding: 10px 0;
+            color: #E5E5E5;
+            font-size: 14px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            resize: none;
+            min-height: 24px;
+            height: 24px;
+            outline: none;
+            line-height: 1.5;
+            overflow: hidden;
+        }
+        
+        .chat-input::placeholder {
+            color: #555;
+        }
+        
+        .chat-send-btn {
+            background: linear-gradient(135deg, #4A90D9, #7B68EE);
+            color: white;
+            border: none;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            box-shadow: 0 4px 15px rgba(123, 104, 238, 0.3);
+        }
+        
+        .chat-send-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(123, 104, 238, 0.4);
+        }
+        
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .chat-welcome {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            color: #888;
+            padding: 20px;
+        }
+        
+        .chat-welcome-icon {
+            width: 120px;
+            height: 120px;
+            margin-bottom: 24px;
+            animation: float 3s ease-in-out infinite;
+            filter: drop-shadow(0 0 30px rgba(100, 150, 255, 0.5)) drop-shadow(0 0 60px rgba(180, 100, 255, 0.3));
+        }
+        
+        .chat-welcome-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        
+        .chat-welcome-title {
+            font-size: 28px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #4A90D9, #7B68EE, #B46BFF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 12px;
+        }
+        
+        .chat-welcome-desc {
+            font-size: 14px;
+            margin-bottom: 40px;
+            max-width: 400px;
+            line-height: 1.6;
+            color: #666;
+        }
+        
+        .chat-suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+            max-width: 600px;
+        }
+        
+        .chat-suggestion-btn {
+            background: rgba(30, 30, 45, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #888;
+            padding: 12px 20px;
+            border-radius: 24px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        
+        .chat-suggestion-btn:hover {
+            border-color: rgba(123, 104, 238, 0.5);
+            color: #E5E5E5;
+            background: rgba(123, 104, 238, 0.1);
+            transform: translateY(-2px);
+        }
+        
+        .chat-content pre {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 12px 16px;
+            border-radius: 10px;
+            overflow-x: auto;
+            margin: 10px 0;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .chat-content code {
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 13px;
+        }
+        
+        .chat-content ul, .chat-content ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        
+        .chat-content li {
+            margin: 6px 0;
+        }
+        
+        .chat-content a {
+            color: #7B68EE;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        
+        .chat-content a:hover {
+            text-decoration: underline;
+        }
+        
+        .chat-content strong {
+            color: #E5E5E5;
+        }
+        
+        .chat-content p {
+            margin: 10px 0;
         }
         
         @media (max-width: 1024px) {
@@ -474,15 +910,153 @@
         <div class="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                    </svg>
-                    QuickPush
+                    <div class="logo-icon">
+                        <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <defs>
+                                <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#4A90D9"/>
+                                    <stop offset="50%" style="stop-color:#7B68EE"/>
+                                    <stop offset="100%" style="stop-color:#B46BFF"/>
+                                </linearGradient>
+                                <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+                                    <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+                                    <feMerge>
+                                        <feMergeNode in="coloredBlur"/>
+                                        <feMergeNode in="SourceGraphic"/>
+                                    </feMerge>
+                                </filter>
+                                <filter id="strongGlow" x="-50%" y="-50%" width="200%" height="200%">
+                                    <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+                                    <feMerge>
+                                        <feMergeNode in="coloredBlur"/>
+                                        <feMergeNode in="SourceGraphic"/>
+                                    </feMerge>
+                                </filter>
+                            </defs>
+                            
+                            <!-- 外圈发光效果 -->
+                            <circle cx="100" cy="100" r="85" fill="none" stroke="url(#logoGradient)" stroke-width="0.5" opacity="0.3" filter="url(#glow)"/>
+                            <circle cx="100" cy="100" r="90" fill="none" stroke="url(#logoGradient)" stroke-width="0.3" opacity="0.2" filter="url(#glow)"/>
+                            
+                            <!-- 网络节点连接线 - 更复杂的网络结构 -->
+                            <g stroke="url(#logoGradient)" stroke-width="1.2" opacity="0.5">
+                                <!-- 中心连接线 -->
+                                <line x1="100" y1="35" x2="65" y2="65"/>
+                                <line x1="100" y1="35" x2="100" y2="65"/>
+                                <line x1="100" y1="35" x2="135" y2="65"/>
+                                <line x1="65" y1="65" x2="35" y2="100"/>
+                                <line x1="65" y1="65" x2="65" y2="100"/>
+                                <line x1="100" y1="65" x2="65" y2="100"/>
+                                <line x1="100" y1="65" x2="100" y2="100"/>
+                                <line x1="100" y1="65" x2="135" y2="100"/>
+                                <line x1="135" y1="65" x2="100" y2="100"/>
+                                <line x1="135" y1="65" x2="135" y2="100"/>
+                                <line x1="135" y1="65" x2="165" y2="100"/>
+                                <line x1="35" y1="100" x2="65" y2="135"/>
+                                <line x1="65" y1="100" x2="65" y2="135"/>
+                                <line x1="65" y1="100" x2="100" y2="135"/>
+                                <line x1="100" y1="100" x2="65" y2="135"/>
+                                <line x1="100" y1="100" x2="100" y2="135"/>
+                                <line x1="100" y1="100" x2="135" y2="135"/>
+                                <line x1="135" y1="100" x2="100" y2="135"/>
+                                <line x1="135" y1="100" x2="135" y2="135"/>
+                                <line x1="135" y1="100" x2="165" y2="135"/>
+                                <line x1="165" y1="100" x2="135" y2="135"/>
+                                <line x1="65" y1="135" x2="100" y2="165"/>
+                                <line x1="100" y1="135" x2="100" y2="165"/>
+                                <line x1="135" y1="135" x2="100" y2="165"/>
+                                <!-- 外围连接线 -->
+                                <line x1="100" y1="35" x2="100" y2="20"/>
+                                <line x1="35" y1="100" x2="20" y2="100"/>
+                                <line x1="165" y1="100" x2="180" y2="100"/>
+                                <line x1="100" y1="165" x2="100" y2="180"/>
+                            </g>
+                            
+                            <!-- 猫咪轮廓 - 更圆润的形状 -->
+                            <path d="M100 30 
+                                     C85 30, 70 38, 65 52
+                                     C55 48, 45 52, 40 62
+                                     C35 58, 30 58, 28 65
+                                     C25 72, 28 80, 32 85
+                                     C28 95, 28 105, 32 115
+                                     C28 120, 25 128, 28 135
+                                     C30 142, 35 142, 40 138
+                                     C45 148, 55 152, 65 148
+                                     C70 158, 85 165, 100 165
+                                     C115 165, 130 158, 135 148
+                                     C145 152, 155 148, 160 138
+                                     C165 142, 170 142, 172 135
+                                     C175 128, 172 120, 168 115
+                                     C172 105, 172 95, 168 85
+                                     C172 80, 175 72, 172 65
+                                     C170 58, 165 58, 160 62
+                                     C155 52, 145 48, 135 52
+                                     C130 38, 115 30, 100 30Z" 
+                                  stroke="url(#logoGradient)" 
+                                  stroke-width="2.5" 
+                                  fill="none"
+                                  filter="url(#strongGlow)"/>
+                            
+                            <!-- 耳朵 - 三角形 -->
+                            <path d="M65 52 L52 28 L78 42" stroke="url(#logoGradient)" stroke-width="2" fill="none" filter="url(#glow)"/>
+                            <path d="M135 52 L148 28 L122 42" stroke="url(#logoGradient)" stroke-width="2" fill="none" filter="url(#glow)"/>
+                            
+                            <!-- 尾巴 - 卷曲 -->
+                            <path d="M160 138 C175 145, 178 130, 172 120 C168 112, 175 105, 180 100" 
+                                  stroke="url(#logoGradient)" 
+                                  stroke-width="2.5" 
+                                  fill="none"
+                                  stroke-linecap="round"
+                                  filter="url(#glow)"/>
+                            
+                            <!-- 网络节点点 -->
+                            <g fill="url(#logoGradient)">
+                                <!-- 中心节点 -->
+                                <circle cx="100" cy="65" r="5" filter="url(#strongGlow)"/>
+                                <circle cx="65" cy="100" r="5" filter="url(#strongGlow)"/>
+                                <circle cx="100" cy="100" r="6" filter="url(#strongGlow)"/>
+                                <circle cx="135" cy="100" r="5" filter="url(#strongGlow)"/>
+                                <circle cx="100" cy="135" r="5" filter="url(#strongGlow)"/>
+                                <!-- 外围节点 -->
+                                <circle cx="100" cy="35" r="4" filter="url(#glow)"/>
+                                <circle cx="65" cy="65" r="3.5" filter="url(#glow)"/>
+                                <circle cx="135" cy="65" r="3.5" filter="url(#glow)"/>
+                                <circle cx="35" cy="100" r="4" filter="url(#glow)"/>
+                                <circle cx="165" cy="100" r="4" filter="url(#glow)"/>
+                                <circle cx="65" cy="135" r="3.5" filter="url(#glow)"/>
+                                <circle cx="135" cy="135" r="3.5" filter="url(#glow)"/>
+                                <circle cx="100" cy="165" r="4" filter="url(#glow)"/>
+                                <!-- 最外围节点 -->
+                                <circle cx="100" cy="20" r="2.5" filter="url(#glow)"/>
+                                <circle cx="20" cy="100" r="2.5" filter="url(#glow)"/>
+                                <circle cx="180" cy="100" r="2.5" filter="url(#glow)"/>
+                                <circle cx="100" cy="180" r="2.5" filter="url(#glow)"/>
+                            </g>
+                            
+                            <!-- 代码符号装饰 - 分布在网络节点之间 -->
+                            <g fill="url(#logoGradient)" opacity="0.8" font-family="monospace" font-size="7">
+                                <text x="82" y="48">{ }</text>
+                                <text x="108" y="48">[ ]</text>
+                                <text x="48" y="82">&lt;/&gt;</text>
+                                <text x="142" y="82">( )</text>
+                                <text x="82" y="118">...</text>
+                                <text x="108" y="118">;;</text>
+                                <text x="92" y="152">fn</text>
+                            </g>
+                        </svg>
+                    </div>
+                    <div class="logo-text">QuickPush</div>
                 </div>
             </div>
             
             <nav class="sidebar-nav">
-                <a class="nav-item active" onclick="showPage('dashboard')">
+                <a class="nav-item active" data-page="chat">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    聊天
+                </a>
+                <a class="nav-item" data-page="dashboard">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="3" y="3" width="7" height="7" rx="1"/>
                         <rect x="14" y="3" width="7" height="7" rx="1"/>
@@ -491,7 +1065,7 @@
                     </svg>
                     仪表盘
                 </a>
-                <a class="nav-item" onclick="showPage('trends')">
+                <a class="nav-item" data-page="trends">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M3 3v18h18"/>
                         <path d="M18 9l-5 5-4-4-3 3"/>
@@ -503,11 +1077,188 @@
         
         <div class="main-content">
             <div class="main-header">
-                <h1 class="page-title" id="page-title">仪表盘</h1>
+                <h1 class="page-title" id="page-title">聊天</h1>
             </div>
             
             <div class="page-container">
-                <div id="dashboard-page" class="page active">
+                <div id="chat-page" class="page active">
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chat-messages">
+                            <div class="chat-welcome" id="chat-welcome">
+                                <div class="chat-welcome-icon">
+                                    <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <defs>
+                                            <linearGradient id="welcomeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" style="stop-color:#4A90D9"/>
+                                                <stop offset="50%" style="stop-color:#7B68EE"/>
+                                                <stop offset="100%" style="stop-color:#B46BFF"/>
+                                            </linearGradient>
+                                            <filter id="welcomeGlow" x="-50%" y="-50%" width="200%" height="200%">
+                                                <feGaussianBlur stdDeviation="5" result="coloredBlur"/>
+                                                <feMerge>
+                                                    <feMergeNode in="coloredBlur"/>
+                                                    <feMergeNode in="SourceGraphic"/>
+                                                </feMerge>
+                                            </filter>
+                                            <filter id="welcomeStrongGlow" x="-50%" y="-50%" width="200%" height="200%">
+                                                <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+                                                <feMerge>
+                                                    <feMergeNode in="coloredBlur"/>
+                                                    <feMergeNode in="SourceGraphic"/>
+                                                </feMerge>
+                                            </filter>
+                                        </defs>
+                                        
+                                        <!-- 外圈发光效果 -->
+                                        <circle cx="100" cy="100" r="85" fill="none" stroke="url(#welcomeGradient)" stroke-width="0.5" opacity="0.3" filter="url(#welcomeGlow)"/>
+                                        <circle cx="100" cy="100" r="90" fill="none" stroke="url(#welcomeGradient)" stroke-width="0.3" opacity="0.2" filter="url(#welcomeGlow)"/>
+                                        
+                                        <!-- 网络节点连接线 - 更复杂的网络结构 -->
+                                        <g stroke="url(#welcomeGradient)" stroke-width="1.2" opacity="0.5">
+                                            <!-- 中心连接线 -->
+                                            <line x1="100" y1="35" x2="65" y2="65"/>
+                                            <line x1="100" y1="35" x2="100" y2="65"/>
+                                            <line x1="100" y1="35" x2="135" y2="65"/>
+                                            <line x1="65" y1="65" x2="35" y2="100"/>
+                                            <line x1="65" y1="65" x2="65" y2="100"/>
+                                            <line x1="100" y1="65" x2="65" y2="100"/>
+                                            <line x1="100" y1="65" x2="100" y2="100"/>
+                                            <line x1="100" y1="65" x2="135" y2="100"/>
+                                            <line x1="135" y1="65" x2="100" y2="100"/>
+                                            <line x1="135" y1="65" x2="135" y2="100"/>
+                                            <line x1="135" y1="65" x2="165" y2="100"/>
+                                            <line x1="35" y1="100" x2="65" y2="135"/>
+                                            <line x1="65" y1="100" x2="65" y2="135"/>
+                                            <line x1="65" y1="100" x2="100" y2="135"/>
+                                            <line x1="100" y1="100" x2="65" y2="135"/>
+                                            <line x1="100" y1="100" x2="100" y2="135"/>
+                                            <line x1="100" y1="100" x2="135" y2="135"/>
+                                            <line x1="135" y1="100" x2="100" y2="135"/>
+                                            <line x1="135" y1="100" x2="135" y2="135"/>
+                                            <line x1="135" y1="100" x2="165" y2="135"/>
+                                            <line x1="165" y1="100" x2="135" y2="135"/>
+                                            <line x1="65" y1="135" x2="100" y2="165"/>
+                                            <line x1="100" y1="135" x2="100" y2="165"/>
+                                            <line x1="135" y1="135" x2="100" y2="165"/>
+                                            <!-- 外围连接线 -->
+                                            <line x1="100" y1="35" x2="100" y2="20"/>
+                                            <line x1="35" y1="100" x2="20" y2="100"/>
+                                            <line x1="165" y1="100" x2="180" y2="100"/>
+                                            <line x1="100" y1="165" x2="100" y2="180"/>
+                                        </g>
+                                        
+                                        <!-- 猫咪轮廓 - 更圆润的形状 -->
+                                        <path d="M100 30 
+                                                 C85 30, 70 38, 65 52
+                                                 C55 48, 45 52, 40 62
+                                                 C35 58, 30 58, 28 65
+                                                 C25 72, 28 80, 32 85
+                                                 C28 95, 28 105, 32 115
+                                                 C28 120, 25 128, 28 135
+                                                 C30 142, 35 142, 40 138
+                                                 C45 148, 55 152, 65 148
+                                                 C70 158, 85 165, 100 165
+                                                 C115 165, 130 158, 135 148
+                                                 C145 152, 155 148, 160 138
+                                                 C165 142, 170 142, 172 135
+                                                 C175 128, 172 120, 168 115
+                                                 C172 105, 172 95, 168 85
+                                                 C172 80, 175 72, 172 65
+                                                 C170 58, 165 58, 160 62
+                                                 C155 52, 145 48, 135 52
+                                                 C130 38, 115 30, 100 30Z" 
+                                              stroke="url(#welcomeGradient)" 
+                                              stroke-width="2.5" 
+                                              fill="none"
+                                              filter="url(#welcomeStrongGlow)"/>
+                                        
+                                        <!-- 耳朵 - 三角形 -->
+                                        <path d="M65 52 L52 28 L78 42" stroke="url(#welcomeGradient)" stroke-width="2" fill="none" filter="url(#welcomeGlow)"/>
+                                        <path d="M135 52 L148 28 L122 42" stroke="url(#welcomeGradient)" stroke-width="2" fill="none" filter="url(#welcomeGlow)"/>
+                                        
+                                        <!-- 尾巴 - 卷曲 -->
+                                        <path d="M160 138 C175 145, 178 130, 172 120 C168 112, 175 105, 180 100" 
+                                              stroke="url(#welcomeGradient)" 
+                                              stroke-width="2.5" 
+                                              fill="none"
+                                              stroke-linecap="round"
+                                              filter="url(#welcomeGlow)"/>
+                                        
+                                        <!-- 网络节点点 -->
+                                        <g fill="url(#welcomeGradient)">
+                                            <!-- 中心节点 -->
+                                            <circle cx="100" cy="65" r="5" filter="url(#welcomeStrongGlow)"/>
+                                            <circle cx="65" cy="100" r="5" filter="url(#welcomeStrongGlow)"/>
+                                            <circle cx="100" cy="100" r="6" filter="url(#welcomeStrongGlow)"/>
+                                            <circle cx="135" cy="100" r="5" filter="url(#welcomeStrongGlow)"/>
+                                            <circle cx="100" cy="135" r="5" filter="url(#welcomeStrongGlow)"/>
+                                            <!-- 外围节点 -->
+                                            <circle cx="100" cy="35" r="4" filter="url(#welcomeGlow)"/>
+                                            <circle cx="65" cy="65" r="3.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="135" cy="65" r="3.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="35" cy="100" r="4" filter="url(#welcomeGlow)"/>
+                                            <circle cx="165" cy="100" r="4" filter="url(#welcomeGlow)"/>
+                                            <circle cx="65" cy="135" r="3.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="135" cy="135" r="3.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="100" cy="165" r="4" filter="url(#welcomeGlow)"/>
+                                            <!-- 最外围节点 -->
+                                            <circle cx="100" cy="20" r="2.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="20" cy="100" r="2.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="180" cy="100" r="2.5" filter="url(#welcomeGlow)"/>
+                                            <circle cx="100" cy="180" r="2.5" filter="url(#welcomeGlow)"/>
+                                        </g>
+                                        
+                                        <!-- 代码符号装饰 - 分布在网络节点之间 -->
+                                        <g fill="url(#welcomeGradient)" opacity="0.8" font-family="monospace" font-size="7">
+                                            <text x="82" y="48">{ }</text>
+                                            <text x="108" y="48">[ ]</text>
+                                            <text x="48" y="82">&lt;/&gt;</text>
+                                            <text x="142" y="82">( )</text>
+                                            <text x="82" y="118">...</text>
+                                            <text x="108" y="118">;;</text>
+                                            <text x="92" y="152">fn</text>
+                                        </g>
+                                    </svg>
+                                </div>
+                                <div class="chat-welcome-title">GitHub Trending 助手</div>
+                                <div class="chat-welcome-desc">基于 GitHub Trending 榜单数据，为您推荐最适合的开源项目</div>
+                                <div class="chat-suggestions">
+                                    <button class="chat-suggestion-btn" onclick="sendSuggestion('有没有好用的 Python 爬虫框架？')">
+                                        有没有好用的 Python 爬虫框架？
+                                    </button>
+                                    <button class="chat-suggestion-btn" onclick="sendSuggestion('推荐一些 AI 编程助手')">
+                                        推荐 AI 编程助手
+                                    </button>
+                                    <button class="chat-suggestion-btn" onclick="sendSuggestion('最近有什么热门的数据可视化工具？')">
+                                        数据可视化工具
+                                    </button>
+                                    <button class="chat-suggestion-btn" onclick="sendSuggestion('有什么好用的机器学习框架？')">
+                                        机器学习框架
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-input-container">
+                            <div class="chat-input-wrapper">
+                                <textarea 
+                                    class="chat-input" 
+                                    id="chat-input" 
+                                    placeholder="输入您的问题，例如：有没有好用的 Python 爬虫框架？"
+                                    rows="1"
+                                    onkeydown="handleChatKeydown(event)"
+                                ></textarea>
+                                <button class="chat-send-btn" id="chat-send-btn" onclick="sendMessage()">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M22 2L11 13"/>
+                                        <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="dashboard-page" class="page">
                     <div id="dashboard-content">
                         <div class="loading">加载中...</div>
                     </div>
@@ -523,26 +1274,38 @@
     </div>
     
     <script>
-        const API_BASE = 'http://localhost:8000/api';
+        const API_BASE = '/api';
         let categoryChart = null;
+        let isStreaming = false;
+        
+        const pageTitles = {
+            'chat': '聊天',
+            'dashboard': '仪表盘',
+            'trends': '趋势分析'
+        };
+        
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', function() {
+                const pageName = this.dataset.page;
+                showPage(pageName);
+            });
+        });
         
         function showPage(pageName) {
             document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(a => a.classList.remove('active'));
             
             document.getElementById(`${pageName}-page`).classList.add('active');
-            event.target.closest('.nav-item').classList.add('active');
+            document.querySelector(`[data-page="${pageName}"]`).classList.add('active');
             
-            const titles = {
-                'dashboard': '仪表盘',
-                'trends': '趋势分析'
-            };
-            document.getElementById('page-title').textContent = titles[pageName];
+            document.getElementById('page-title').textContent = pageTitles[pageName];
             
             if (pageName === 'dashboard') {
                 loadDashboard();
             } else if (pageName === 'trends') {
                 loadTrends();
+            } else if (pageName === 'chat') {
+                document.getElementById('chat-input').focus();
             }
         }
         
@@ -625,9 +1388,11 @@
             return `
                 <div class="project-item" onclick="toggleProject(this)">
                     <div class="project-header">
-                        <a class="project-name" href="${project.url}" target="_blank">
-                            ${project.repo_name}
-                        </a>
+                        <span class="project-name" onclick="event.stopPropagation()">
+                            <a href="${project.url}" target="_blank" style="color: inherit; text-decoration: none;">
+                                ${project.repo_name}
+                            </a>
+                        </span>
                         <div class="project-stars">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
@@ -796,7 +1561,206 @@
             return names[category] || category;
         }
         
-        loadDashboard();
+        function handleChatKeydown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+        
+        function sendSuggestion(text) {
+            document.getElementById('chat-input').value = text;
+            sendMessage();
+        }
+        
+        function addMessage(role, content, projects = null) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const welcome = document.getElementById('chat-welcome');
+            if (welcome) {
+                welcome.style.display = 'none';
+            }
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${role}`;
+            
+            const avatar = role === 'assistant' ? '🤖' : '👤';
+            
+            let projectsHtml = '';
+            if (projects && projects.length > 0) {
+                projectsHtml = `
+                    <div class="chat-referenced-projects">
+                        <div class="chat-referenced-projects-title">📚 参考项目</div>
+                        ${projects.map(p => `
+                            <div class="chat-project-card">
+                                <div class="chat-project-card-header">
+                                    <a class="chat-project-card-name" href="${p.url}" target="_blank">${p.repo_full_name}</a>
+                                    <span class="chat-project-card-similarity">${p.similarity}% 相关</span>
+                                </div>
+                                <div class="chat-project-card-summary">${p.summary}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            
+            messageDiv.innerHTML = `
+                <div class="chat-avatar">${avatar}</div>
+                <div class="chat-bubble">
+                    <div class="chat-content">${content}</div>
+                    ${projectsHtml}
+                </div>
+            `;
+            
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            return messageDiv;
+        }
+        
+        function addStatusMessage(content) {
+            const messagesContainer = document.getElementById('chat-messages');
+            
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'chat-status';
+            statusDiv.id = 'chat-status';
+            statusDiv.innerHTML = `
+                <div class="spinner"></div>
+                <span>${content}</span>
+            `;
+            
+            messagesContainer.appendChild(statusDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            return statusDiv;
+        }
+        
+        function updateStatusMessage(content) {
+            const statusDiv = document.getElementById('chat-status');
+            if (statusDiv) {
+                statusDiv.querySelector('span').textContent = content;
+            }
+        }
+        
+        function removeStatusMessage() {
+            const statusDiv = document.getElementById('chat-status');
+            if (statusDiv) {
+                statusDiv.remove();
+            }
+        }
+        
+        function formatContent(text) {
+            if (!text) return '';
+            return marked.parse(text);
+        }
+        
+        async function sendMessage() {
+            if (isStreaming) return;
+            
+            const input = document.getElementById('chat-input');
+            const query = input.value.trim();
+            
+            if (!query) return;
+            
+            isStreaming = true;
+            const sendBtn = document.getElementById('chat-send-btn');
+            sendBtn.disabled = true;
+            
+            addMessage('user', query);
+            input.value = '';
+            
+            addStatusMessage('正在思考...');
+            
+            let assistantMessage = null;
+            let currentContent = '';
+            let currentProjects = null;
+            
+            try {
+                const response = await fetch(`${API_BASE}/chat/stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        top_k: 3,
+                        threshold: 0.5
+                    })
+                });
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                
+                                if (data.type === 'status') {
+                                    updateStatusMessage(data.content);
+                                } else if (data.type === 'projects') {
+                                    currentProjects = data.projects;
+                                } else if (data.type === 'content_start') {
+                                    removeStatusMessage();
+                                    assistantMessage = addMessage('assistant', '');
+                                } else if (data.type === 'content') {
+                                    if (assistantMessage) {
+                                        currentContent += data.content;
+                                        const contentDiv = assistantMessage.querySelector('.chat-content');
+                                        contentDiv.innerHTML = formatContent(currentContent);
+                                        
+                                        const messagesContainer = document.getElementById('chat-messages');
+                                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                                    }
+                                } else if (data.type === 'done') {
+                                    if (assistantMessage && currentProjects) {
+                                        const bubble = assistantMessage.querySelector('.chat-bubble');
+                                        let projectsHtml = `
+                                            <div class="chat-referenced-projects">
+                                                <div class="chat-referenced-projects-title">📚 参考项目</div>
+                                                ${currentProjects.map(p => `
+                                                    <div class="chat-project-card">
+                                                        <div class="chat-project-card-header">
+                                                            <a class="chat-project-card-name" href="${p.url}" target="_blank">${p.repo_full_name}</a>
+                                                            <span class="chat-project-card-similarity">${p.similarity}% 相关</span>
+                                                        </div>
+                                                        <div class="chat-project-card-summary">${p.summary}</div>
+                                                    </div>
+                                                `).join('')}
+                                            </div>
+                                        `;
+                                        bubble.innerHTML = `
+                                            <div class="chat-content">${formatContent(currentContent)}</div>
+                                            ${projectsHtml}
+                                        `;
+                                    }
+                                } else if (data.type === 'error') {
+                                    removeStatusMessage();
+                                    addMessage('assistant', `抱歉，出错了：${data.content}`);
+                                }
+                            } catch (e) {
+                                console.error('Parse error:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                removeStatusMessage();
+                addMessage('assistant', `抱歉，网络出错了：${error.message}`);
+            }
+            
+            isStreaming = false;
+            sendBtn.disabled = false;
+            input.focus();
+        }
+        
+        document.getElementById('chat-input').focus();
     </script>
 </body>
 </html>

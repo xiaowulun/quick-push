@@ -13,7 +13,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from agents.base import BaseAgent, AgentResult
-from tools.search_tools import SearchAggregator
+from agents.tools.search_tools import SearchAggregator
 from core.config import get_config
 
 logger = logging.getLogger(__name__)

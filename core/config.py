@@ -35,8 +35,6 @@ class MultimodalConfig(BaseModel):
 class BehaviorConfig(BaseModel):
     max_retries: int = Field(default=3, description="LLM 调用最大重试次数")
     max_concurrency: int = Field(default=3, description="最大并发数")
-    enable_router: bool = Field(default=True, description="是否启用项目分类器")
-    enable_multi_agent: bool = Field(default=True, description="是否启用 Multi-Agent 分析")
 
 
 class Config:

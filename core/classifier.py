@@ -24,6 +24,28 @@ class ClassificationResult(BaseModel):
     reasoning: str = Field(description="分类理由")
 
 
+def get_category_emoji(category: ProjectCategory) -> str:
+    """获取分类对应的 emoji"""
+    emoji_map = {
+        ProjectCategory.AI_ECOSYSTEM: "🤖",
+        ProjectCategory.INFRA_AND_TOOLS: "⚙️",
+        ProjectCategory.PRODUCT_AND_UI: "🎨",
+        ProjectCategory.KNOWLEDGE_BASE: "📚",
+    }
+    return emoji_map.get(category, "📦")
+
+
+def get_category_name(category: ProjectCategory) -> str:
+    """获取分类的中文名称"""
+    name_map = {
+        ProjectCategory.AI_ECOSYSTEM: "AI 生态与应用",
+        ProjectCategory.INFRA_AND_TOOLS: "底层基建与开发者工具",
+        ProjectCategory.PRODUCT_AND_UI: "全栈应用与视觉组件",
+        ProjectCategory.KNOWLEDGE_BASE: "知识库与聚合资源",
+    }
+    return name_map.get(category, "其他")
+
+
 # 分类 Prompt
 CLASSIFIER_PROMPT = """你是一个 GitHub 项目分类专家。请根据以下信息判断项目属于哪一类：
 
@@ -79,7 +101,7 @@ class ProjectClassifier:
             api_key=config.openai.api_key,
             base_url=config.openai.base_url,
             model_name=config.openai.model,
-            temperature=0.1  # 确定性输出
+            temperature=0.3  # 确定性输出
         )
         self.prompt = ChatPromptTemplate.from_template(CLASSIFIER_PROMPT)
         self.chain = self.prompt | self.llm.with_structured_output(ClassificationResult)

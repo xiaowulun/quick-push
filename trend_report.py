@@ -7,7 +7,7 @@
 import argparse
 from datetime import date, timedelta
 from utils.cache import AnalysisCache
-from core.prompts import get_category_emoji, get_category_name
+from core.classifier import get_category_emoji, get_category_name
 
 
 def print_trend_report(days: int = 7):

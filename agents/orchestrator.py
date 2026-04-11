@@ -16,6 +16,7 @@ from agents.base import BaseAgent, AgentResult
 from agents.scout import ScoutAgent
 from agents.analyst import AnalystAgent
 from agents.editor import EditorAgent
+from services.search_service import SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class AgentOrchestrator:
         self.scout = ScoutAgent()
         self.analyst = AnalystAgent()
         self.editor = EditorAgent()
+        self.search_service = SearchService()
         self.logger = logging.getLogger("agents.orchestrator")
 
     async def analyze_project(
@@ -87,12 +89,23 @@ class AgentOrchestrator:
 
             # 整合最终结果
             if editor_result.success:
-                return self._create_final_result(
+                result = self._create_final_result(
                     repo_name=repo_name,
                     editor_result=editor_result,
                     scout_result=scout_result,
                     analyst_result=analyst_result,
                 )
+                
+                # 自动生成向量并存储
+                if result.success:
+                    asyncio.create_task(self._index_project_async(
+                        repo_name=repo_name,
+                        result=result,
+                        repo_data=repo_data,
+                        category=category
+                    ))
+                
+                return result
             else:
                 # Editor 失败，降级使用基础分析
                 return await self._create_fallback_result(
@@ -242,3 +255,40 @@ class AgentOrchestrator:
                 processed_results.append(result)
 
         return processed_results
+
+    async def _index_project_async(
+        self,
+        repo_name: str,
+        result: AgentResult,
+        repo_data: Dict[str, Any],
+        category: str
+    ):
+        """
+        异步索引项目（生成向量并存储）
+        
+        Args:
+            repo_name: 项目全名
+            result: 分析结果
+            repo_data: 项目数据
+            category: 分类
+        """
+        try:
+            summary = result.data.get("summary", "")
+            reasons = result.data.get("reasons", [])
+            language = repo_data.get("language", "")
+            
+            success = await self.search_service.index_project(
+                repo_full_name=repo_name,
+                summary=summary,
+                reasons=reasons,
+                language=language,
+                category=category
+            )
+            
+            if success:
+                self.logger.info(f"[Orchestrator] 项目 {repo_name} 向量化成功")
+            else:
+                self.logger.warning(f"[Orchestrator] 项目 {repo_name} 向量化失败")
+                
+        except Exception as e:
+            self.logger.error(f"[Orchestrator] 项目 {repo_name} 向量化异常: {e}")

@@ -22,7 +22,12 @@ class AnalysisCache:
                     repo_full_name TEXT PRIMARY KEY,
                     summary TEXT NOT NULL,
                     reasons TEXT NOT NULL,
-                    analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    search_text TEXT,
+                    embedding TEXT,
+                    keywords TEXT,
+                    tech_stack TEXT,
+                    use_cases TEXT
                 )
             """)
 
@@ -262,3 +267,148 @@ class AnalysisCache:
                 end_date=date.today().isoformat()
             ))
         }
+
+    # ========== 向量搜索相关方法 ==========
+
+    def set_with_embedding(
+        self,
+        repo_full_name: str,
+        summary: str,
+        reasons: list,
+        search_text: str = None,
+        embedding: list = None,
+        keywords: list = None,
+        tech_stack: list = None,
+        use_cases: list = None
+    ):
+        """保存分析结果和向量数据到缓存"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO analysis_cache 
+                (repo_full_name, summary, reasons, analyzed_at, search_text, embedding, keywords, tech_stack, use_cases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repo_full_name,
+                    summary,
+                    json.dumps(reasons),
+                    datetime.now().isoformat(),
+                    search_text,
+                    json.dumps(embedding) if embedding else None,
+                    json.dumps(keywords) if keywords else None,
+                    json.dumps(tech_stack) if tech_stack else None,
+                    json.dumps(use_cases) if use_cases else None
+                )
+            )
+            conn.commit()
+
+    def get_embedding(self, repo_full_name: str) -> Optional[Dict]:
+        """获取项目的向量数据"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT summary, reasons, search_text, embedding, keywords, tech_stack, use_cases, analyzed_at
+                FROM analysis_cache 
+                WHERE repo_full_name = ?
+                """,
+                (repo_full_name,)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return {
+                    "summary": row["summary"],
+                    "reasons": json.loads(row["reasons"]),
+                    "search_text": row["search_text"],
+                    "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
+                    "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
+                    "tech_stack": json.loads(row["tech_stack"]) if row["tech_stack"] else [],
+                    "use_cases": json.loads(row["use_cases"]) if row["use_cases"] else [],
+                    "analyzed_at": row["analyzed_at"]
+                }
+            return None
+
+    def get_all_embeddings(self) -> List[Dict]:
+        """获取所有项目的向量数据"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT 
+                    ac.repo_full_name,
+                    ac.summary,
+                    ac.reasons,
+                    ac.search_text,
+                    ac.embedding,
+                    ac.keywords,
+                    ac.tech_stack,
+                    ac.use_cases,
+                    ri.category,
+                    th.language,
+                    th.stars
+                FROM analysis_cache ac
+                LEFT JOIN repo_info ri ON ac.repo_full_name = ri.repo_full_name
+                LEFT JOIN trending_history th ON ac.repo_full_name = th.repo_full_name
+                WHERE ac.embedding IS NOT NULL
+                GROUP BY ac.repo_full_name
+                """
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    "repo_full_name": row["repo_full_name"],
+                    "summary": row["summary"],
+                    "reasons": json.loads(row["reasons"]),
+                    "search_text": row["search_text"],
+                    "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
+                    "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
+                    "tech_stack": json.loads(row["tech_stack"]) if row["tech_stack"] else [],
+                    "use_cases": json.loads(row["use_cases"]) if row["use_cases"] else [],
+                    "category": row["category"],
+                    "language": row["language"],
+                    "stars": row["stars"]
+                })
+            return results
+
+    def build_search_text(
+        self,
+        repo_full_name: str,
+        summary: str,
+        reasons: list,
+        language: str = "",
+        category: str = ""
+    ) -> str:
+        """
+        构建用于向量化的综合文本
+        
+        Args:
+            repo_full_name: 项目全名
+            summary: 项目分析
+            reasons: 爆火原因
+            language: 编程语言
+            category: 分类
+        
+        Returns:
+            综合文本描述
+        """
+        parts = []
+        
+        parts.append(f"项目名称: {repo_full_name}")
+        
+        if language:
+            parts.append(f"编程语言: {language}")
+        
+        if category:
+            parts.append(f"项目分类: {category}")
+        
+        if summary:
+            parts.append(f"项目简介: {summary}")
+        
+        if reasons:
+            parts.append("核心特点:")
+            for reason in reasons:
+                parts.append(f"  - {reason}")
+        
+        return "\n".join(parts)
