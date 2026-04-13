@@ -41,13 +41,13 @@ class ScoutAgent(BaseAgent):
     """
 
     def __init__(self):
-        super().__init__("ScoutAgent")
+        super().__init__("ScoutAgent", "趋势情报侦察员 - 基于外部搜索数据 + LLM 推理，提供主观的趋势分析")
         config = get_config()
         self.searcher = SearchAggregator(github_token=config.github.token)
         self.llm = ChatOpenAI(
             api_key=config.openai.api_key,
             base_url=config.openai.base_url,
-            model_name=config.openai.model,
+            model_name=config.openai.model_standard,
             temperature=0.7
         )
 

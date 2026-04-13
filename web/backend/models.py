@@ -16,9 +16,9 @@ class ProjectCard(BaseModel):
 
 class DashboardResponse(BaseModel):
     ai_ecosystem: List[ProjectCard]
-    dev_tools: List[ProjectCard]
-    infrastructure: List[ProjectCard]
+    infra_and_tools: List[ProjectCard]
     product_and_ui: List[ProjectCard]
+    knowledge_base: List[ProjectCard]
 
 
 class CategoryTrend(BaseModel):

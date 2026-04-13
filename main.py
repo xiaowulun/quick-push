@@ -3,13 +3,13 @@ import asyncio
 import argparse
 from datetime import datetime, date
 from dotenv import load_dotenv
-from core.github_fetcher import GitHubFetcher
-from core.summarizer import Summarizer
-from core.classifier import ProjectClassifier
-from utils.notifier import Notifier, TrendingMessage
-from utils.logging_config import setup_logging, get_logger
-from utils.cache import AnalysisCache
-from core.config import get_config
+from app.github.fetcher import GitHubFetcher
+from app.analysis.summarizer import Summarizer
+from app.analysis.classifier import ProjectClassifier
+from app.infrastructure.notifier import Notifier, TrendingMessage
+from app.infrastructure.logging import setup_logging, get_logger
+from app.infrastructure.cache import AnalysisCache
+from app.infrastructure.config import get_config
 
 load_dotenv()
 
@@ -20,7 +20,7 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
     logger.info(f"开始获取 GitHub 趋势榜单 (语言: {language or '全部'}, 时间: {since})")
 
     fetcher = GitHubFetcher()
-    repos = fetcher.fetch_trending(language=language, since=since, limit=limit)
+    repos = fetcher.fetch_trending_repos(language=language, date_range=since, limit=limit)
     logger.info(f"获取到 {len(repos)} 个热门项目")
 
     summarizer = Summarizer(enable_cache=True)
@@ -69,7 +69,6 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
 
     logger.info(f"分析完成，成功 {len(success_messages)} 个，失败 {len(failure_repos)} 个")
 
-    # 保存趋势数据
     _save_trending_data(repos, since)
 
     mode = "feishu" if notify else "print"
@@ -95,7 +94,6 @@ def _save_trending_data(repos, since_type: str):
         today = date.today()
 
         for i, repo in enumerate(repos, 1):
-            # 获取项目分类
             try:
                 classification = classifier.classify(
                     repo.full_name,
@@ -107,7 +105,6 @@ def _save_trending_data(repos, since_type: str):
                 logger.warning(f"分类失败 {repo.full_name}: {e}")
                 category = None
 
-            # 保存趋势记录
             cache.save_trending_record(
                 record_date=today,
                 repo_full_name=repo.full_name,

@@ -1,16 +1,18 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import Optional
 from datetime import date, timedelta
 import sys
 import os
 import json
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from utils.cache import AnalysisCache
-from services.search_service import SearchService
-from services.chat_service import RAGChatService
+from app.infrastructure.cache import AnalysisCache
+from app.infrastructure.config import get_config
+from app.knowledge.search import SearchService
+from app.knowledge.chat import RAGChatService
 from ..models import (
     DashboardResponse, ProjectCard, TrendsResponse, CategoryTrend, 
     LanguageTrend, HotProject, SearchResponse, SearchResult,
@@ -23,21 +25,123 @@ cache = AnalysisCache()
 search_service = SearchService()
 chat_service = RAGChatService()
 
+
+@router.get("/github/validate")
+async def validate_github_token():
+    """验证 GitHub Token 是否有效"""
+    try:
+        config = get_config()
+        token = config.github.token
+        
+        if not token:
+            return {
+                "valid": False,
+                "error": "GitHub Token 未配置",
+                "message": "请在 .env 文件中设置 GITHUB_TOKEN"
+            }
+        
+        response = requests.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            user_data = response.json()
+            return {
+                "valid": True,
+                "username": user_data.get("login"),
+                "name": user_data.get("name"),
+                "avatar_url": user_data.get("avatar_url"),
+                "message": f"已登录为 {user_data.get('login')}"
+            }
+        elif response.status_code == 401:
+            return {
+                "valid": False,
+                "error": "Token 无效或已过期",
+                "message": "请检查 GITHUB_TOKEN 是否正确"
+            }
+        else:
+            return {
+                "valid": False,
+                "error": f"验证失败: HTTP {response.status_code}",
+                "message": response.text[:200]
+            }
+    except requests.exceptions.Timeout:
+        return {
+            "valid": False,
+            "error": "请求超时",
+            "message": "GitHub API 响应超时，请检查网络连接"
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": "验证异常",
+            "message": str(e)[:200]
+        }
+
+
+@router.get("/github/rate-limit")
+async def get_github_rate_limit():
+    """获取 GitHub API 速率限制"""
+    try:
+        config = get_config()
+        token = config.github.token
+        
+        if not token:
+            return {
+                "error": "GitHub Token 未配置"
+            }
+        
+        response = requests.get(
+            "https://api.github.com/rate_limit",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            core = data.get("resources", {}).get("core", {})
+            return {
+                "limit": core.get("limit"),
+                "remaining": core.get("remaining"),
+                "used": core.get("used"),
+                "reset": core.get("reset"),
+                "reset_time": date.fromtimestamp(core.get("reset", 0)) if core.get("reset") else None
+            }
+        else:
+            return {
+                "error": f"获取失败: HTTP {response.status_code}"
+            }
+    except Exception as e:
+        return {
+            "error": str(e)[:200]
+        }
+
 @router.get("/dashboard", response_model=DashboardResponse)
-async def get_dashboard():
-    """获取仪表盘数据，按分类展示项目"""
+async def get_dashboard(days: int = 1):
+    """获取仪表盘数据，显示指定天数内的项目（默认今日）"""
     
-    today = date.today()
+    # 查询指定天数内的项目记录
+    start_date = date.today() - timedelta(days=days-1)  # 包含今天
+    end_date = date.today()
+    
     records = cache.get_trending_history(
-        start_date=today - timedelta(days=7),
-        end_date=today
+        start_date=start_date,
+        end_date=end_date
     )
     
     categorized = {
         "ai_ecosystem": [],
-        "dev_tools": [],
-        "infrastructure": [],
-        "product_and_ui": []
+        "infra_and_tools": [],
+        "product_and_ui": [],
+        "knowledge_base": []
     }
     
     seen_repos = set()
@@ -50,7 +154,7 @@ async def get_dashboard():
         
         category = record.get("category")
         if not category or category not in categorized:
-            category = "dev_tools"
+            category = "infra_and_tools"
         
         analysis = cache.get(repo_name)
         
@@ -67,15 +171,13 @@ async def get_dashboard():
         )
         
         categorized[category].append(project)
-        
-        if len(categorized[category]) >= 5:
-            continue
     
+    # 每个分类最多显示 10 个
     return DashboardResponse(
-        ai_ecosystem=categorized["ai_ecosystem"][:5],
-        dev_tools=categorized["dev_tools"][:5],
-        infrastructure=categorized["infrastructure"][:5],
-        product_and_ui=categorized["product_and_ui"][:5]
+        ai_ecosystem=categorized["ai_ecosystem"][:10],
+        infra_and_tools=categorized["infra_and_tools"][:10],
+        product_and_ui=categorized["product_and_ui"][:10],
+        knowledge_base=categorized["knowledge_base"][:10]
     )
 
 @router.get("/trends", response_model=TrendsResponse)
