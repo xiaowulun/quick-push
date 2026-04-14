@@ -35,10 +35,15 @@ env/
 # Environment Variables
 .env
 .env.local
+node_modules
+
 
 # Cache
 .cache/
 *.db
+
+# ChromaDB
+.chroma_db/
 
 # OS
 .DS_Store

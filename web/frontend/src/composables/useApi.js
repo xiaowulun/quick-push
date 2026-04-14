@@ -55,11 +55,18 @@ export function useApi() {
     }
   }
 
-  async function* streamChat(query, topK = 3, threshold = 0.5) {
+  async function* streamChat(query, options = {}) {
+    const { topK = 5, sessionId = null, signal = null } = options
+
     const response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, top_k: topK, threshold })
+      body: JSON.stringify({ 
+        query, 
+        top_k: topK,
+        session_id: sessionId
+      }),
+      signal
     })
 
     if (!response.ok || !response.body) {

@@ -2,6 +2,11 @@
 RAG 对话服务模块
 
 实现基于 GitHub Trending 数据库的智能问答功能
+
+搜索流程：
+1. 粗排：混合检索（向量 + BM25）→ RRF 融合 → top 20
+2. 精排：Cross-Encoder 重排序 → top 5
+3. LLM 生成回答
 """
 
 import logging
@@ -11,7 +16,8 @@ from dataclasses import dataclass
 from openai import OpenAI
 from app.infrastructure.config import get_config
 from app.infrastructure.cache import AnalysisCache
-from app.infrastructure.embedding import EmbeddingEngine
+from app.infrastructure.session import SessionManager, get_session_manager
+from app.knowledge.search import SearchService
 from app.knowledge.query_parser import QueryFilters, get_query_parser
 
 logger = logging.getLogger(__name__)
@@ -115,15 +121,14 @@ class RAGChatService:
     def __init__(self):
         self.config = get_config()
         self.cache = AnalysisCache()
-        self.embedding_engine = EmbeddingEngine()
+        self.search_service = SearchService()
+        self.session_manager = get_session_manager()
         self.client = OpenAI(
             api_key=self.config.openai.api_key,
             base_url=self.config.openai.base_url
         )
         self.model = self.config.openai.model_chat
         self.query_parser = get_query_parser()
-        self.last_filters = None  # 记忆上次的过滤条件
-        self.last_query_time = None  # 上次查询时间
 
     def _is_technical_query(self, query: str) -> bool:
         """判断用户问题是否与技术/项目相关"""
@@ -142,23 +147,20 @@ class RAGChatService:
         
         return len(query) >= 8
     
-    def _is_followup_query(self, query: str) -> bool:
-        """判断是否是追问（延续上下文的查询）"""
+    def _is_followup_query(self, query: str, session) -> bool:
+        """判断是否是追问"""
         query_lower = query.lower().strip()
         
-        # 检查是否包含追问关键词（必须在 5 分钟内）
-        if self.last_query_time:
-            time_diff = (datetime.now() - self.last_query_time).total_seconds()
-            if time_diff < 300:  # 5 分钟内
+        if session.last_query_time:
+            time_diff = (datetime.now() - session.last_query_time).total_seconds()
+            if time_diff < 300:
                 for pattern in self.FOLLOWUP_PATTERNS:
                     if pattern in query_lower:
                         return True
         
-        # 如果上次查询在 5 分钟内，且问题很短（可能是追问）
-        if (self.last_query_time and 
+        if (session.last_query_time and 
             len(query) < 20 and 
-            (datetime.now() - self.last_query_time).total_seconds() < 300):
-            # 排除打招呼
+            (datetime.now() - session.last_query_time).total_seconds() < 300):
             for pattern in self.GREETING_PATTERNS:
                 if pattern in query_lower:
                     return False
@@ -169,110 +171,48 @@ class RAGChatService:
     async def retrieve_projects(
         self,
         query: str,
-        top_k: int = 3,
-        threshold: float = 0.5,
-        min_best_similarity: float = 0.45,
+        top_k: int = 5,
         filters: QueryFilters = None
     ) -> List[RetrievedProject]:
         """
-        检索相关项目（支持宽松过滤）
+        检索相关项目（使用混合检索 + Rerank）
         
-        宽松过滤策略：
-        - 不严格排除不匹配的项目
-        - 匹配的项目给予相似度加权
-        - 最终按加权后的相似度排序
+        流程：
+        1. 粗排：混合检索（向量 + BM25）→ RRF 融合 → top 20
+        2. 精排：Cross-Encoder 重排序 → top 5
         
         Args:
             query: 用户查询
-            top_k: 返回数量
-            threshold: 相似度阈值
-            min_best_similarity: 最低最佳相似度
-            filters: 过滤条件（可选）
+            top_k: 最终返回数量
+            filters: 过滤条件（暂未实现）
         """
         try:
-            all_embeddings = self.cache.get_all_embeddings()
-            
-            if not all_embeddings:
-                logger.warning("数据库中没有已索引的项目")
-                return []
-
-            query_embedding = await self.embedding_engine.embed_text(query)
-            if not query_embedding:
-                logger.error("查询向量化失败")
-                return []
-
-            from app.infrastructure.embedding import EmbeddingEngine
-            embeddings = [doc["embedding"] for doc in all_embeddings if doc.get("embedding")]
-            similarities = EmbeddingEngine.batch_cosine_similarity(
-                query_embedding,
-                embeddings
+            results = await self.search_service.search_projects(
+                query=query,
+                coarse_top_k=20,
+                final_top_k=top_k,
+                filters=filters
             )
 
-            results = []
-            for doc, similarity in zip(all_embeddings, similarities):
-                results.append({
-                    "doc": doc,
-                    "similarity": similarity,
-                    "boosted_similarity": similarity  # 初始加权相似度=原始相似度
-                })
-
-            # 应用宽松过滤（加权策略）
-            if filters and filters.has_filters():
-                logger.info(f"应用宽松过滤：{filters}")
-                for result in results:
-                    doc = result["doc"]
-                    boost = 1.0
-                    
-                    # 语言匹配：加权 1.3 倍
-                    if filters.language:
-                        if doc.get("language") == filters.language:
-                            boost *= 1.3
-                        elif filters.language.lower() in (doc.get("language") or "").lower():
-                            boost *= 1.15  # 部分匹配（如"Python"匹配"Python3"）
-                    
-                    # 分类匹配：加权 1.2 倍（分类本身不太准确，权重低一些）
-                    if filters.category:
-                        if doc.get("category") == filters.category:
-                            boost *= 1.2
-                    
-                    # 时间范围：7 天内的加权 1.1 倍（暂时未实现）
-                    if filters.days:
-                        pass
-                    
-                    # Star 数：超过 min_stars 的加权 1.1 倍
-                    if filters.min_stars is not None:
-                        if doc.get("stars", 0) >= filters.min_stars:
-                            boost *= 1.1
-                    
-                    # 应用加权
-                    result["boosted_similarity"] = result["similarity"] * boost
-
-            # 按加权后的相似度排序
-            results.sort(key=lambda x: x["boosted_similarity"], reverse=True)
-
-            if not results or results[0]["boosted_similarity"] < min_best_similarity:
-                logger.info(f"最高相似度 {results[0]['boosted_similarity'] if results else 0:.3f} 低于阈值 {min_best_similarity}，未找到相关项目")
+            if not results:
+                logger.info(f"未找到相关项目: {query}")
                 return []
 
-            top_results = results[:top_k]
-
             retrieved = []
-            for item in top_results:
-                if item["boosted_similarity"] >= threshold:
-                    doc = item["doc"]
-                    project = RetrievedProject(
-                        repo_full_name=doc["repo_full_name"],
-                        summary=doc.get("summary", ""),
-                        reasons=doc.get("reasons", []),
-                        similarity=item["boosted_similarity"],
-                        category=doc.get("category"),
-                        language=doc.get("language"),
-                        stars=doc.get("stars"),
-                        url=f"https://github.com/{doc['repo_full_name']}"
-                    )
-                    retrieved.append(project)
+            for item in results:
+                project = RetrievedProject(
+                    repo_full_name=item.get("repo_full_name", ""),
+                    summary=item.get("summary", ""),
+                    reasons=item.get("reasons", []),
+                    similarity=item.get("rerank_score", 0),
+                    category=item.get("category"),
+                    language=item.get("language"),
+                    stars=item.get("stars"),
+                    url=f"https://github.com/{item.get('repo_full_name', '')}"
+                )
+                retrieved.append(project)
 
-            logger.info(f"检索完成，找到 {len(retrieved)} 个相关项目，最高相似度：{results[0]['boosted_similarity']:.3f}")
+            logger.info(f"检索完成，找到 {len(retrieved)} 个相关项目")
             return retrieved
 
         except Exception as e:
@@ -302,7 +242,7 @@ class RAGChatService:
         return "\n\n".join(context_parts)
 
     async def _chat_without_retrieval(self, query: str) -> AsyncGenerator[Dict, None]:
-        """不检索项目的纯对话模式（用于打招呼、闲聊等）"""
+        """不检索项目的纯对话模式"""
         yield {
             "type": "status",
             "content": "正在思考..."
@@ -388,10 +328,17 @@ class RAGChatService:
     async def chat_stream(
         self,
         query: str,
-        top_k: int = 3,
-        threshold: float = 0.5
+        top_k: int = 5,
+        session_id: Optional[str] = None
     ) -> AsyncGenerator[Dict, None]:
         """流式对话生成"""
+        session = self.session_manager.get_or_create(session_id)
+        
+        yield {
+            "type": "session",
+            "session_id": session.session_id
+        }
+
         if not self._is_technical_query(query):
             async for chunk in self._chat_without_retrieval(query):
                 yield chunk
@@ -407,17 +354,15 @@ class RAGChatService:
             "content": "正在检索相关项目..."
         }
 
-        # 智能解析：判断是否是追问
-        if self._is_followup_query(query) and self.last_filters:
-            logger.info(f"检测到追问，沿用上次过滤条件：{self.last_filters}")
-            filters = self.last_filters
+        if self._is_followup_query(query, session) and session.last_filters:
+            logger.info(f"检测到追问，沿用上次过滤条件：{session.last_filters}")
+            filters = session.last_filters
         else:
-            # 新查询，调用 QueryParser
             filters = await self.query_parser.parse(query)
-            self.last_filters = filters if filters.has_filters() else None
-            self.last_query_time = datetime.now()
+            session.last_filters = filters if filters.has_filters() else None
+            session.last_query_time = datetime.now()
         
-        projects = await self.retrieve_projects(query, top_k, threshold, filters=filters)
+        projects = await self.retrieve_projects(query, top_k, filters=filters)
 
         if not projects:
             async for chunk in self._chat_no_match(query):
@@ -454,6 +399,7 @@ class RAGChatService:
             "type": "content_start"
         }
 
+        full_answer = ""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -469,10 +415,21 @@ class RAGChatService:
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
+                    full_answer += content
                     yield {
                         "type": "content",
                         "content": content
                     }
+
+            session.add_to_history(query, full_answer, [
+                {
+                    "repo_full_name": p.repo_full_name,
+                    "summary": p.summary,
+                    "similarity": p.similarity
+                }
+                for p in projects
+            ])
+            session.query_count += 1
 
         except Exception as e:
             logger.error(f"LLM 生成失败：{str(e)}")
@@ -485,8 +442,10 @@ class RAGChatService:
             "type": "done"
         }
 
-    async def chat(self, query: str, top_k: int = 3, threshold: float = 0.5) -> Dict:
+    async def chat(self, query: str, top_k: int = 5, session_id: Optional[str] = None) -> Dict:
         """非流式对话"""
+        session = self.session_manager.get_or_create(session_id)
+
         if not self._is_technical_query(query):
             try:
                 response = self.client.chat.completions.create(
@@ -501,26 +460,26 @@ class RAGChatService:
                 return {
                     "answer": response.choices[0].message.content,
                     "projects": [],
-                    "success": True
+                    "success": True,
+                    "session_id": session.session_id
                 }
             except Exception as e:
                 return {
                     "answer": f"生成回答时出错：{str(e)}",
                     "projects": [],
-                    "success": False
+                    "success": False,
+                    "session_id": session.session_id
                 }
 
-        # 智能解析：判断是否是追问
-        if self._is_followup_query(query) and self.last_filters:
-            logger.info(f"检测到追问，沿用上次过滤条件：{self.last_filters}")
-            filters = self.last_filters
+        if self._is_followup_query(query, session) and session.last_filters:
+            logger.info(f"检测到追问，沿用上次过滤条件：{session.last_filters}")
+            filters = session.last_filters
         else:
-            # 新查询，调用 QueryParser
             filters = await self.query_parser.parse(query)
-            self.last_filters = filters if filters.has_filters() else None
-            self.last_query_time = datetime.now()
+            session.last_filters = filters if filters.has_filters() else None
+            session.last_query_time = datetime.now()
         
-        projects = await self.retrieve_projects(query, top_k, threshold, filters=filters)
+        projects = await self.retrieve_projects(query, top_k, filters=filters)
 
         if not projects:
             try:
@@ -536,13 +495,15 @@ class RAGChatService:
                 return {
                     "answer": response.choices[0].message.content,
                     "projects": [],
-                    "success": True
+                    "success": True,
+                    "session_id": session.session_id
                 }
             except Exception as e:
                 return {
                     "answer": f"生成回答时出错：{str(e)}",
                     "projects": [],
-                    "success": False
+                    "success": False,
+                    "session_id": session.session_id
                 }
 
         projects_context = self._format_projects_context(projects)
@@ -564,6 +525,16 @@ class RAGChatService:
 
             answer = response.choices[0].message.content
 
+            session.add_to_history(query, answer, [
+                {
+                    "repo_full_name": p.repo_full_name,
+                    "summary": p.summary,
+                    "similarity": p.similarity
+                }
+                for p in projects
+            ])
+            session.query_count += 1
+
             return {
                 "answer": answer,
                 "projects": [
@@ -577,7 +548,8 @@ class RAGChatService:
                     }
                     for p in projects
                 ],
-                "success": True
+                "success": True,
+                "session_id": session.session_id
             }
 
         except Exception as e:
@@ -585,5 +557,6 @@ class RAGChatService:
             return {
                 "answer": f"生成回答时出错：{str(e)}",
                 "projects": [],
-                "success": False
+                "success": False,
+                "session_id": session.session_id
             }

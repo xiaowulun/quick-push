@@ -61,6 +61,7 @@ const isStreaming = ref(false)
 const messagesContainer = ref(null)
 const chatInput = ref(null)
 const abortController = ref(null)
+const sessionId = ref(null)
 
 const timeFilter = inject('timeFilter')
 
@@ -97,8 +98,14 @@ async function handleSend(text) {
   abortController.value = new AbortController()
   
   try {
-    for await (const data of streamChat(text)) {
-      if (data.type === 'status') {
+    for await (const data of streamChat(text, {
+      topK: 5,
+      sessionId: sessionId.value,
+      signal: abortController.value.signal
+    })) {
+      if (data.type === 'session') {
+        sessionId.value = data.session_id
+      } else if (data.type === 'status') {
         status.value = data.content
       } else if (data.type === 'projects') {
         currentMessage.projects = data.projects

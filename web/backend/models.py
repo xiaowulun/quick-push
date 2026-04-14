@@ -76,8 +76,8 @@ class SearchResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     query: str
-    top_k: int = 3
-    threshold: float = 0.5
+    top_k: int = 5
+    session_id: Optional[str] = None
 
 
 class ChatProject(BaseModel):
@@ -93,3 +93,4 @@ class ChatResponse(BaseModel):
     answer: str
     projects: List[ChatProject]
     success: bool
+    session_id: str

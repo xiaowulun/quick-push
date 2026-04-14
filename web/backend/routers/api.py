@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import sys
 import os
 import json
-import requests
+import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
@@ -16,7 +16,7 @@ from app.knowledge.chat import RAGChatService
 from ..models import (
     DashboardResponse, ProjectCard, TrendsResponse, CategoryTrend, 
     LanguageTrend, HotProject, SearchResponse, SearchResult,
-    ChatRequest, ChatResponse
+    ChatRequest, ChatResponse, ChatProject
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -40,14 +40,14 @@ async def validate_github_token():
                 "message": "请在 .env 文件中设置 GITHUB_TOKEN"
             }
         
-        response = requests.get(
-            "https://api.github.com/user",
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json"
-            },
-            timeout=10
-        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+            )
         
         if response.status_code == 200:
             user_data = response.json()
@@ -70,7 +70,7 @@ async def validate_github_token():
                 "error": f"验证失败: HTTP {response.status_code}",
                 "message": response.text[:200]
             }
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {
             "valid": False,
             "error": "请求超时",
@@ -96,14 +96,14 @@ async def get_github_rate_limit():
                 "error": "GitHub Token 未配置"
             }
         
-        response = requests.get(
-            "https://api.github.com/rate_limit",
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json"
-            },
-            timeout=10
-        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://api.github.com/rate_limit",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+            )
         
         if response.status_code == 200:
             data = response.json()
@@ -128,8 +128,7 @@ async def get_github_rate_limit():
 async def get_dashboard(days: int = 1):
     """获取仪表盘数据，显示指定天数内的项目（默认今日）"""
     
-    # 查询指定天数内的项目记录
-    start_date = date.today() - timedelta(days=days-1)  # 包含今天
+    start_date = date.today() - timedelta(days=days-1)
     end_date = date.today()
     
     records = cache.get_trending_history(
@@ -172,7 +171,6 @@ async def get_dashboard(days: int = 1):
         
         categorized[category].append(project)
     
-    # 每个分类最多显示 10 个
     return DashboardResponse(
         ai_ecosystem=categorized["ai_ecosystem"][:10],
         infra_and_tools=categorized["infra_and_tools"][:10],
@@ -261,24 +259,25 @@ async def get_trends(days: int = Query(7, ge=1, le=30)):
 @router.get("/search", response_model=SearchResponse)
 async def search_projects(
     q: str = Query(..., min_length=1, description="搜索关键词"),
-    top_k: int = Query(10, ge=1, le=50, description="返回结果数量"),
-    threshold: float = Query(0.3, ge=0.0, le=1.0, description="相似度阈值"),
-    use_hybrid: bool = Query(True, description="是否使用混合搜索")
+    coarse_top_k: int = Query(20, ge=5, le=100, description="粗排数量"),
+    final_top_k: int = Query(5, ge=1, le=20, description="最终返回数量")
 ):
     """
     智能搜索项目
     
+    搜索流程：
+    1. 粗排：混合检索（向量 + BM25）→ RRF 融合 → top coarse_top_k
+    2. 精排：Cross-Encoder 重排序 → top final_top_k
+    
     - **q**: 搜索关键词，支持自然语言查询
-    - **top_k**: 返回结果数量，默认10个
-    - **threshold**: 相似度阈值，默认0.3
-    - **use_hybrid**: 是否使用混合搜索（向量+关键词），默认True
+    - **coarse_top_k**: 粗排数量，默认20个
+    - **final_top_k**: 最终返回数量，默认5个
     """
     
     results = await search_service.search_projects(
         query=q,
-        top_k=top_k,
-        threshold=threshold,
-        use_hybrid=use_hybrid
+        coarse_top_k=coarse_top_k,
+        final_top_k=final_top_k
     )
     
     search_results = [
@@ -286,7 +285,7 @@ async def search_projects(
             repo_full_name=result.get("repo_full_name", ""),
             summary=result.get("summary", ""),
             reasons=result.get("reasons", []),
-            similarity=result.get("similarity", 0.0),
+            similarity=result.get("rerank_score", 0.0),
             category=result.get("category"),
             language=result.get("language"),
             stars=result.get("stars"),
@@ -329,12 +328,13 @@ async def chat(request: ChatRequest):
     智能对话（非流式）
     
     基于用户问题检索相关项目，生成智能回答
+    支持会话管理，传入 session_id 可保持上下文
     """
     
     result = await chat_service.chat(
         query=request.query,
         top_k=request.top_k,
-        threshold=request.threshold
+        session_id=request.session_id
     )
     
     return ChatResponse(
@@ -350,7 +350,8 @@ async def chat(request: ChatRequest):
             )
             for p in result["projects"]
         ],
-        success=result["success"]
+        success=result["success"],
+        session_id=result["session_id"]
     )
 
 
@@ -361,13 +362,14 @@ async def chat_stream(request: ChatRequest):
     
     基于用户问题检索相关项目，流式生成智能回答
     使用 Server-Sent Events (SSE) 格式
+    支持会话管理，传入 session_id 可保持上下文
     """
     
     async def generate():
         async for chunk in chat_service.chat_stream(
             query=request.query,
             top_k=request.top_k,
-            threshold=request.threshold
+            session_id=request.session_id
         ):
             data = json.dumps(chunk, ensure_ascii=False)
             yield f"data: {data}\n\n"
@@ -381,3 +383,65 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.get("/session/{session_id}")
+async def get_session(session_id: str):
+    """
+    获取会话信息
+    
+    返回会话的历史记录和状态
+    """
+    from app.infrastructure.session import get_session_manager
+    
+    session_manager = get_session_manager()
+    session = session_manager.get(session_id)
+    
+    if not session:
+        return {
+            "error": "会话不存在或已过期",
+            "session_id": session_id
+        }
+    
+    return {
+        "session_id": session.session_id,
+        "created_at": session.created_at.isoformat(),
+        "last_active": session.last_active.isoformat(),
+        "query_count": session.query_count,
+        "history": session.history
+    }
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    """
+    删除会话
+    
+    清除会话的所有状态和历史记录
+    """
+    from app.infrastructure.session import get_session_manager
+    
+    session_manager = get_session_manager()
+    deleted = session_manager.delete(session_id)
+    
+    return {
+        "success": deleted,
+        "session_id": session_id
+    }
+
+
+@router.get("/sessions/stats")
+async def get_sessions_stats():
+    """
+    获取会话统计信息
+    
+    返回当前活跃会话数量等信息
+    """
+    from app.infrastructure.session import get_session_manager
+    
+    session_manager = get_session_manager()
+    
+    return {
+        "active_sessions": session_manager.get_active_count(),
+        "total_sessions": len(session_manager.sessions)
+    }

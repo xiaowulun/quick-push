@@ -13,10 +13,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
+IS_DEV = os.getenv("NODE_ENV") != "production"
+
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS if IS_DEV else ["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -26,7 +37,6 @@ app.include_router(api.router)
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 
-IS_DEV = os.getenv("NODE_ENV") != "production"
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -49,9 +59,11 @@ async def root():
     
     return HTMLResponse(content="<h1>Frontend not found</h1>", status_code=404)
 
+
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
 
 @app.get("/{path:path}", response_class=HTMLResponse)
 async def spa_fallback(path: str):
@@ -76,6 +88,7 @@ async def spa_fallback(path: str):
         return FileResponse(html_file)
     
     return HTMLResponse(content="Not found", status_code=404)
+
 
 if DIST_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
