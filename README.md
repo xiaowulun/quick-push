@@ -1,4 +1,4 @@
-# QuickPush
+# QuickPush 🚀
 
 > 追踪 GitHub Trending，用更少时间看懂项目，用对话方式快速找到真正值得关注的开源仓库。
 
@@ -13,7 +13,7 @@ QuickPush 是一个面向开发者的实用工具箱。
 
 ***
 
-## 这个项目解决了什么问题
+## 这个项目解决了什么问题 ❓
 
 大家都知道 Trending 有价值，但也有一个现实问题：
 信息很多、噪音也很多，真正适合自己的项目并不好找。
@@ -28,7 +28,7 @@ QuickPush 的目标是把“刷榜”变成“有依据的筛选”：
 
 ***
 
-## 核心功能
+## 核心功能 ✨
 
 - Trending 数据管道（抓取 + 分类 + 入库）
 - AI 分析（摘要 + 推荐理由）
@@ -41,7 +41,7 @@ QuickPush 的目标是把“刷榜”变成“有依据的筛选”：
 
 ***
 
-## 技术栈
+## 技术栈 🧰
 
 - 后端：`Python`、`FastAPI`、`SQLite`
 - 检索：`ChromaDB`、`BM25`、`Cross-Encoder`、`jieba`
@@ -50,32 +50,37 @@ QuickPush 的目标是把“刷榜”变成“有依据的筛选”：
 
 ***
 
-## 项目结构
+## 项目结构 🗂️
 
 ```text
 quick-push/
 ├── app/                    # 核心逻辑：抓取、分析、检索、基础设施
+├── data/
+│   ├── sqlite/             # SQLite 数据（analysis_cache.db）
+│   └── chroma/             # Chroma 向量索引数据
 ├── web/
 │   ├── backend/            # FastAPI 服务
 │   └── frontend/           # Vue 前端
-├── scripts/                # 工具与迁移脚本
+├── tests/                  # pytest 自动化测试
+├── scripts/                # 工具脚本（含手动检查脚本）
 ├── .github/workflows/      # CI / 定时任务
 ├── main.py                 # CLI 入口（抓取 + 分析 + 通知）
+├── pytest.ini
 ├── requirements.txt
 └── README.md
 ```
 
 ***
 
-## 快速开始
+## 快速开始 ⚡
 
-### 1. 环境要求
+### 1. 环境要求 🧱
 
 - Python `3.9+`
 - Node.js `18+`
 - npm `9+`
 
-### 2. 安装依赖
+### 2. 安装依赖 📦
 
 ```bash
 pip install -r requirements.txt
@@ -87,19 +92,19 @@ npm install
 cd ../..
 ```
 
-### 3. 配置环境变量
+### 3. 配置环境变量 🔐
 
 复制 `.env.example` 为 `.env`，至少配置以下内容：
 
 ```env
 OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-GITHUB_TOKEN=your_github_token
 ```
 
-可选配置（飞书、模型路由、多模态开关等）请参考 `.env.example`。
+可选配置（GitHub Token、飞书、模型路由、多模态开关、Reddit 检索等）请参考 `.env.example`。
+其中 `GITHUB_TOKEN` 为可选，不配置也可运行（但更容易遇到限流）。
 
-### 4. 运行数据管道（CLI）
+### 4. 运行数据管道（CLI） 🏃
 
 ```bash
 # 默认：抓取 + 分析 + 通知
@@ -109,9 +114,10 @@ python main.py
 python main.py --language python
 python main.py --since weekly --limit 20
 python main.py --no-notify
+python main.py --no-cache
 ```
 
-### 5. 启动后端
+### 5. 启动后端 🖥️
 
 ```bash
 python web/backend/run.py
@@ -120,7 +126,7 @@ python web/backend/run.py
 - API 地址：`http://localhost:8000`
 - 健康检查：`http://localhost:8000/health`
 
-### 6. 启动前端
+### 6. 启动前端 🌐
 
 ```bash
 cd web/frontend
@@ -131,7 +137,7 @@ npm run dev
 
 ***
 
-## API 概览
+## API 概览 🔌
 
 - `GET /api/dashboard`：看板数据
 - `GET /api/trends`：趋势分析
@@ -145,7 +151,7 @@ npm run dev
 
 ***
 
-## 推荐开发流程
+## 推荐开发流程 🛠️
 
 1. 先执行 `python main.py` 抓取和分析最新项目。
 2. 调用 `POST /api/search/index` 刷新检索索引。
@@ -154,10 +160,36 @@ npm run dev
 
 ***
 
-## 常见问题
+## 测试与验证 ✅
+
+自动化测试（pytest）：
+
+```bash
+python -m pytest
+```
+
+手动分类检查脚本（会调用真实模型接口）：
+
+```bash
+python scripts/manual_confidence_check.py
+```
+
+***
+
+## 数据目录说明 💾
+
+- 当前默认数据目录为 `data/sqlite` 与 `data/chroma`。
+- 历史目录 `.cache` 与 `.chroma_db` 已废弃。
+- `AnalysisCache` 仍保留从 `.cache/analysis_cache.db` 到 `data/sqlite/analysis_cache.db` 的一次性兼容迁移逻辑（如存在旧库）。
+
+***
+
+## 常见问题 🧯
 
 - 缺少 `OPENAI_API_KEY` 或 `OPENAI_BASE_URL` 不可用
   - 后端初始化或聊天分析会失败。
+- 没有配置 `GITHUB_TOKEN`
+  - 可以运行，但抓取 GitHub 数据时更可能触发限流或超时重试。
 - 前端请求失败
   - 请确认后端是否已在 `:8000` 启动。
 - 搜索没有结果
@@ -169,13 +201,13 @@ npm run dev
 
 
 
-## 参与贡献
+## 参与贡献 🤝
 
 欢迎提 Issue 和 PR。
 
 
 ***
 
-## License
+## License 📄
 
 MIT
