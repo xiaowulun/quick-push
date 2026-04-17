@@ -81,8 +81,8 @@ class CrossEncoderReranker(Reranker):
             
             logger.info(f"Cross-Encoder 模型加载完成: {self.model_name}")
             
-        except ImportError:
-            logger.warning("sentence_transformers 未安装，Cross-Encoder 不可用")
+        except ImportError as e:
+            logger.warning(f"Cross-Encoder 依赖导入失败（可能是 sentence_transformers 或 torch 环境问题）: {str(e)}")
             raise
         except Exception as e:
             logger.error(f"Cross-Encoder 模型加载失败: {str(e)}")

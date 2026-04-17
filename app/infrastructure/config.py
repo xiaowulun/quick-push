@@ -9,6 +9,7 @@ load_dotenv()
 class OpenAIConfig(BaseModel):
     api_key: str = Field(description="OpenAI API Key")
     base_url: str = Field(default="https://api.siliconflow.cn/v1", description="API Base URL")
+    request_timeout: int = Field(default=90, description="OpenAI 请求超时时间（秒）")
     model_fast: str = Field(default="Qwen/Qwen2.5-7B-Instruct", description="快速分析模型")
     model_standard: str = Field(default="Qwen/Qwen3-VL-32B-Thinking", description="标准分析模型")
     model_pro: str = Field(default="Qwen/Qwen-Max", description="深度分析模型")
@@ -42,17 +43,25 @@ class BehaviorConfig(BaseModel):
     max_concurrency: int = Field(default=3, description="最大并发数")
 
 
+class RedditConfig(BaseModel):
+    cookie: Optional[str] = Field(default=None, description="Reddit Cookie")
+    enabled: bool = Field(default=True, description="是否启用 Reddit 检索")
+    timeout: int = Field(default=30, description="Playwright 超时时间（秒）")
+
+
 class Config:
     openai: OpenAIConfig
     github: GitHubConfig
     feishu: FeishuConfig
     behavior: BehaviorConfig
     multimodal: MultimodalConfig
+    reddit: RedditConfig
 
     def __init__(self):
         self.openai = OpenAIConfig(
             api_key=os.getenv("OPENAI_API_KEY", ""),
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1"),
+            request_timeout=int(os.getenv("OPENAI_REQUEST_TIMEOUT", "90")),
             model_fast=os.getenv("OPENAI_MODEL_FAST", "Qwen/Qwen2.5-7B-Instruct"),
             model_standard=os.getenv("OPENAI_MODEL_STANDARD", "Qwen/Qwen3-VL-32B-Thinking"),
             model_pro=os.getenv("OPENAI_MODEL_PRO", "Qwen/Qwen-Max"),
@@ -73,11 +82,19 @@ class Config:
             receive_id_type=os.getenv("FEISHU_RECEIVE_ID_TYPE", "chat_id"),
         )
 
-        self.behavior = BehaviorConfig()
+        self.behavior = BehaviorConfig(
+            max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
+            max_concurrency=int(os.getenv("MAX_CONCURRENCY", "3")),
+        )
         self.multimodal = MultimodalConfig(
             max_chars=int(os.getenv("MULTIMODAL_MAX_CHARS", "3000")),
             max_images=int(os.getenv("MULTIMODAL_MAX_IMAGES", "3")),
             enable_multimodal=os.getenv("MULTIMODAL_ENABLE", "false").lower() == "true",
+        )
+        self.reddit = RedditConfig(
+            cookie=os.getenv("REDDIT_COOKIE"),
+            enabled=os.getenv("REDDIT_ENABLED", "true").lower() == "true",
+            timeout=int(os.getenv("REDDIT_TIMEOUT", "30")),
         )
 
     def validate(self) -> list[str]:
@@ -85,9 +102,6 @@ class Config:
 
         if not self.openai.api_key:
             errors.append("OPENAI_API_KEY 未设置")
-        
-        if not self.github.token:
-            errors.append("GITHUB_TOKEN 未设置（可能导致 API 限流）")
 
         return errors
 

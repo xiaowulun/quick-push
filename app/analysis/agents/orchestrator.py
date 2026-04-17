@@ -36,7 +36,8 @@ class AgentOrchestrator:
         repo_name: str,
         repo_data: Dict[str, Any],
         readme_content: Optional[str],
-        description: Optional[str],
+        raw_readme_content: Optional[str] = None,
+        description: Optional[str] = None,
         category: str = ""
     ) -> AgentResult:
         """
@@ -102,7 +103,8 @@ class AgentOrchestrator:
                         repo_name=repo_name,
                         result=result,
                         repo_data=repo_data,
-                        category=category
+                        category=category,
+                        readme_content=raw_readme_content or readme_content or ""
                     ))
 
                 return result
@@ -208,7 +210,8 @@ class AgentOrchestrator:
         repo_name: str,
         result: AgentResult,
         repo_data: Dict[str, Any],
-        category: str
+        category: str,
+        readme_content: str = ""
     ):
         """异步索引项目（生成向量并存储）"""
         try:
@@ -220,6 +223,7 @@ class AgentOrchestrator:
                 repo_full_name=repo_name,
                 summary=summary,
                 reasons=reasons,
+                readme_content=readme_content,
                 language=language,
                 category=category
             )

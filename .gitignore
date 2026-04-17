@@ -44,6 +44,11 @@ node_modules
 
 # ChromaDB
 .chroma_db/
+data/chroma/
+
+# SQLite (only keep canonical file in git)
+data/sqlite/*.db
+!data/sqlite/analysis_cache.db
 
 # OS
 .DS_Store
@@ -57,5 +62,6 @@ Thumbs.db
 
 # Testing
 .pytest_cache/
+pytest-cache-files-*/
 .coverage
 htmlcov/

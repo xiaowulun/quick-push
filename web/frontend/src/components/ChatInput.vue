@@ -102,18 +102,20 @@ defineExpose({ focus })
 
 .chat-input {
   flex: 1;
+  width: 100%;
   background: transparent;
   border: none;
-  padding: 10px 0;
+  padding: 12px 8px;
   color: var(--text-primary);
   font-size: 14px;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   resize: none;
-  min-height: 24px;
-  height: 24px;
+  min-height: 44px;
+  height: auto;
   outline: none;
   line-height: 1.5;
-  overflow: hidden;
+  overflow: auto;
+  align-self: center;
 }
 
 .chat-input::placeholder {

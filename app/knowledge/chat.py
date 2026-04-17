@@ -9,14 +9,18 @@ RAG 对话服务模块
 3. LLM 生成回答
 """
 
+import asyncio
 import logging
-from datetime import datetime
-from typing import List, Dict, AsyncGenerator, Optional
+import re
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
 from openai import OpenAI
+
 from app.infrastructure.config import get_config
 from app.infrastructure.cache import AnalysisCache
-from app.infrastructure.session import SessionManager, get_session_manager
+from app.infrastructure.session import get_session_manager
 from app.knowledge.search import SearchService
 from app.knowledge.query_parser import QueryFilters, get_query_parser
 
@@ -118,17 +122,61 @@ class RAGChatService:
         "还有别的吗", "再来几个", "换一批", "重新推荐"
     ]
 
+    VALID_CATEGORIES = {
+        "ai_ecosystem",
+        "infra_and_tools",
+        "product_and_ui",
+        "knowledge_base",
+    }
+
     def __init__(self):
         self.config = get_config()
         self.cache = AnalysisCache()
         self.search_service = SearchService()
         self.session_manager = get_session_manager()
+        self.request_timeout = int(getattr(self.config.openai, "request_timeout", 90))
         self.client = OpenAI(
             api_key=self.config.openai.api_key,
-            base_url=self.config.openai.base_url
+            base_url=self.config.openai.base_url,
+            timeout=self.request_timeout,
         )
         self.model = self.config.openai.model_chat
         self.query_parser = get_query_parser()
+
+    def _classify_chat_error(self, error: Exception) -> Dict[str, Any]:
+        name = error.__class__.__name__
+        status_code = getattr(error, "status_code", None)
+
+        if isinstance(error, (TimeoutError, asyncio.TimeoutError)) or name in {"APITimeoutError", "ReadTimeout"}:
+            return {
+                "code": "CHAT_TIMEOUT",
+                "message": "请求超时，请稍后重试。",
+                "status_code": 504,
+            }
+        if name == "RateLimitError":
+            return {
+                "code": "CHAT_RATE_LIMIT",
+                "message": "请求过于频繁，请稍后再试。",
+                "status_code": 429,
+            }
+        if name in {"APIConnectionError", "ConnectTimeout", "ConnectionError"}:
+            return {
+                "code": "CHAT_UPSTREAM_UNAVAILABLE",
+                "message": "上游服务暂时不可用，请稍后重试。",
+                "status_code": 503,
+            }
+        if name == "APIStatusError":
+            mapped_status = status_code if isinstance(status_code, int) and status_code >= 400 else 502
+            return {
+                "code": "CHAT_UPSTREAM_ERROR",
+                "message": f"上游服务异常（{mapped_status}），请稍后重试。",
+                "status_code": mapped_status,
+            }
+        return {
+            "code": "CHAT_INTERNAL_ERROR",
+            "message": "服务内部异常，请稍后重试。",
+            "status_code": 500,
+        }
 
     def _is_technical_query(self, query: str) -> bool:
         """判断用户问题是否与技术/项目相关"""
@@ -151,22 +199,78 @@ class RAGChatService:
         """判断是否是追问"""
         query_lower = query.lower().strip()
         
-        if session.last_query_time:
-            time_diff = (datetime.now() - session.last_query_time).total_seconds()
-            if time_diff < 300:
-                for pattern in self.FOLLOWUP_PATTERNS:
-                    if pattern in query_lower:
-                        return True
-        
-        if (session.last_query_time and 
-            len(query) < 20 and 
-            (datetime.now() - session.last_query_time).total_seconds() < 300):
-            for pattern in self.GREETING_PATTERNS:
-                if pattern in query_lower:
-                    return False
+        if not session.last_query_time:
+            return False
+
+        # Keep follow-up reuse only in a short context window.
+        time_diff = (datetime.now() - session.last_query_time).total_seconds()
+        if time_diff >= 300:
+            return False
+
+        for pattern in self.FOLLOWUP_PATTERNS:
+            if pattern in query_lower:
+                return True
+
+        # Only explicit short ellipsis prompts are treated as follow-up.
+        terse_followup = {
+            "还有呢", "然后呢", "继续", "再说说", "展开讲讲", "细说", "具体点", "举例", "对比下",
+            "what else", "go on", "continue", "more",
+        }
+        if query_lower in terse_followup:
             return True
-        
+
         return False
+
+    def _sanitize_filters(self, filters: Any) -> QueryFilters:
+        """Normalize parser/session filters and drop malformed values."""
+        if isinstance(filters, QueryFilters):
+            data = filters.model_dump()
+        elif isinstance(filters, dict):
+            data = dict(filters)
+        else:
+            return QueryFilters()
+
+        raw_category = str(data.get("category") or "").strip().lower()
+        normalized_category = None
+        if raw_category:
+            compact = raw_category.replace("-", "_").replace(" ", "")
+            for cat in self.VALID_CATEGORIES:
+                if cat in compact:
+                    normalized_category = cat
+                    break
+
+        raw_language = str(data.get("language") or "").strip()
+        normalized_language = None
+        if raw_language:
+            normalized_language = re.sub(r"\s+", " ", raw_language)
+            if len(normalized_language) > 32:
+                normalized_language = normalized_language[:32]
+
+        raw_keywords = data.get("keywords") or []
+        normalized_keywords: List[str] = []
+        for kw in raw_keywords:
+            text = re.sub(r"\s+", " ", str(kw or "").strip())
+            if not text:
+                continue
+            normalized_keywords.append(text[:32])
+            if len(normalized_keywords) >= 8:
+                break
+
+        days = data.get("days")
+        if not isinstance(days, int) or days <= 0 or days > 365:
+            days = None
+
+        min_stars = data.get("min_stars")
+        if not isinstance(min_stars, int) or min_stars < 0:
+            min_stars = None
+
+        return QueryFilters(
+            language=normalized_language,
+            category=normalized_category,
+            days=days,
+            min_stars=min_stars,
+            keywords=normalized_keywords,
+        )
 
     async def retrieve_projects(
         self,
@@ -261,7 +365,8 @@ class RAGChatService:
                 ],
                 stream=True,
                 temperature=0.7,
-                max_tokens=500
+                max_tokens=500,
+                timeout=self.request_timeout,
             )
 
             for chunk in response:
@@ -273,10 +378,12 @@ class RAGChatService:
                     }
 
         except Exception as e:
-            logger.error(f"LLM 生成失败：{str(e)}")
+            err = self._classify_chat_error(e)
+            logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
             yield {
                 "type": "error",
-                "content": f"生成回答时出错：{str(e)}"
+                "code": err["code"],
+                "content": err["message"],
             }
 
         yield {
@@ -303,7 +410,8 @@ class RAGChatService:
                 ],
                 stream=True,
                 temperature=0.7,
-                max_tokens=800
+                max_tokens=800,
+                timeout=self.request_timeout,
             )
 
             for chunk in response:
@@ -315,10 +423,12 @@ class RAGChatService:
                     }
 
         except Exception as e:
-            logger.error(f"LLM 生成失败：{str(e)}")
+            err = self._classify_chat_error(e)
+            logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
             yield {
                 "type": "error",
-                "content": f"生成回答时出错：{str(e)}"
+                "code": err["code"],
+                "content": err["message"],
             }
 
         yield {
@@ -340,8 +450,15 @@ class RAGChatService:
         }
 
         if not self._is_technical_query(query):
+            full_answer = ""
             async for chunk in self._chat_without_retrieval(query):
+                if chunk.get("type") == "content" and chunk.get("content"):
+                    full_answer += chunk["content"]
                 yield chunk
+
+            if full_answer:
+                session.add_to_history(query, full_answer, [])
+                session.query_count += 1
             return
 
         yield {
@@ -356,17 +473,25 @@ class RAGChatService:
 
         if self._is_followup_query(query, session) and session.last_filters:
             logger.info(f"检测到追问，沿用上次过滤条件：{session.last_filters}")
-            filters = session.last_filters
+            filters = self._sanitize_filters(session.last_filters)
         else:
-            filters = await self.query_parser.parse(query)
+            parsed_filters = await self.query_parser.parse(query)
+            filters = self._sanitize_filters(parsed_filters)
             session.last_filters = filters if filters.has_filters() else None
             session.last_query_time = datetime.now()
         
         projects = await self.retrieve_projects(query, top_k, filters=filters)
 
         if not projects:
+            full_answer = ""
             async for chunk in self._chat_no_match(query):
+                if chunk.get("type") == "content" and chunk.get("content"):
+                    full_answer += chunk["content"]
                 yield chunk
+
+            if full_answer:
+                session.add_to_history(query, full_answer, [])
+                session.query_count += 1
             return
 
         yield {
@@ -409,7 +534,8 @@ class RAGChatService:
                 ],
                 stream=True,
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=2000,
+                timeout=self.request_timeout,
             )
 
             for chunk in response:
@@ -432,10 +558,12 @@ class RAGChatService:
             session.query_count += 1
 
         except Exception as e:
-            logger.error(f"LLM 生成失败：{str(e)}")
+            err = self._classify_chat_error(e)
+            logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
             yield {
                 "type": "error",
-                "content": f"生成回答时出错：{str(e)}"
+                "code": err["code"],
+                "content": err["message"],
             }
 
         yield {
@@ -455,7 +583,8 @@ class RAGChatService:
                         {"role": "user", "content": query}
                     ],
                     temperature=0.7,
-                    max_tokens=500
+                    max_tokens=500,
+                    timeout=self.request_timeout,
                 )
                 return {
                     "answer": response.choices[0].message.content,
@@ -464,18 +593,23 @@ class RAGChatService:
                     "session_id": session.session_id
                 }
             except Exception as e:
+                err = self._classify_chat_error(e)
                 return {
-                    "answer": f"生成回答时出错：{str(e)}",
+                    "answer": err["message"],
                     "projects": [],
                     "success": False,
-                    "session_id": session.session_id
+                    "session_id": session.session_id,
+                    "error_code": err["code"],
+                    "error_message": err["message"],
+                    "status_code": err["status_code"],
                 }
 
         if self._is_followup_query(query, session) and session.last_filters:
             logger.info(f"检测到追问，沿用上次过滤条件：{session.last_filters}")
-            filters = session.last_filters
+            filters = self._sanitize_filters(session.last_filters)
         else:
-            filters = await self.query_parser.parse(query)
+            parsed_filters = await self.query_parser.parse(query)
+            filters = self._sanitize_filters(parsed_filters)
             session.last_filters = filters if filters.has_filters() else None
             session.last_query_time = datetime.now()
         
@@ -490,7 +624,8 @@ class RAGChatService:
                         {"role": "user", "content": f"用户问题：{query}\n\n请回答用户的问题，并告知数据库中没有找到相关的 GitHub Trending 项目。"}
                     ],
                     temperature=0.7,
-                    max_tokens=800
+                    max_tokens=800,
+                    timeout=self.request_timeout,
                 )
                 return {
                     "answer": response.choices[0].message.content,
@@ -499,11 +634,15 @@ class RAGChatService:
                     "session_id": session.session_id
                 }
             except Exception as e:
+                err = self._classify_chat_error(e)
                 return {
-                    "answer": f"生成回答时出错：{str(e)}",
+                    "answer": err["message"],
                     "projects": [],
                     "success": False,
-                    "session_id": session.session_id
+                    "session_id": session.session_id,
+                    "error_code": err["code"],
+                    "error_message": err["message"],
+                    "status_code": err["status_code"],
                 }
 
         projects_context = self._format_projects_context(projects)
@@ -520,7 +659,8 @@ class RAGChatService:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=2000,
+                timeout=self.request_timeout,
             )
 
             answer = response.choices[0].message.content
@@ -553,10 +693,14 @@ class RAGChatService:
             }
 
         except Exception as e:
-            logger.error(f"LLM 生成失败：{str(e)}")
+            err = self._classify_chat_error(e)
+            logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
             return {
-                "answer": f"生成回答时出错：{str(e)}",
+                "answer": err["message"],
                 "projects": [],
                 "success": False,
-                "session_id": session.session_id
+                "session_id": session.session_id,
+                "error_code": err["code"],
+                "error_message": err["message"],
+                "status_code": err["status_code"],
             }

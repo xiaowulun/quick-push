@@ -1,11 +1,7 @@
-"""
-向量化工具模块
-
-提供文本向量化和相似度计算功能
-"""
-
+import asyncio
 import logging
 from typing import List, Optional
+
 import numpy as np
 from openai import OpenAI
 
@@ -15,75 +11,153 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingEngine:
-    """文本向量化引擎"""
+    """Text embedding engine."""
 
     def __init__(self):
         self.config = get_config()
         self.client = OpenAI(
             api_key=self.config.openai.api_key,
-            base_url=self.config.openai.base_url
+            base_url=self.config.openai.base_url,
         )
         self.model = "BAAI/bge-large-zh-v1.5"
         self.dimension = 1024
+        self.max_retries = max(1, int(getattr(self.config.behavior, "max_retries", 3)))
+        self.base_retry_delay = 1.5
+        self.max_batch_size = 32
 
     async def embed_text(self, text: str) -> Optional[List[float]]:
-        """将文本转换为向量"""
-        try:
-            if not text or not text.strip():
-                logger.warning("文本为空，无法向量化")
-                return None
-
-            response = self.client.embeddings.create(
-                model=self.model,
-                input=text,
-                encoding_format="float"
-            )
-
-            embedding = response.data[0].embedding
-            logger.info(f"文本向量化成功，维度: {len(embedding)}")
-            return embedding
-
-        except Exception as e:
-            logger.error(f"文本向量化失败: {str(e)}")
+        """Embed a single text with retry."""
+        if not text or not text.strip():
+            logger.warning("Text is empty, skip embedding")
             return None
 
+        text = text.strip()
+        text_len = len(text)
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = self.client.embeddings.create(
+                    model=self.model,
+                    input=text,
+                    encoding_format="float",
+                )
+                embedding = response.data[0].embedding
+                logger.info(
+                    "Embedding success model=%s dim=%s len=%s attempt=%s/%s",
+                    self.model,
+                    len(embedding),
+                    text_len,
+                    attempt,
+                    self.max_retries,
+                )
+                return embedding
+            except Exception as e:
+                if attempt >= self.max_retries:
+                    logger.error(
+                        "Embedding failed model=%s len=%s attempts=%s error_type=%s error=%s",
+                        self.model,
+                        text_len,
+                        self.max_retries,
+                        type(e).__name__,
+                        str(e),
+                    )
+                    return None
+
+                delay = self.base_retry_delay * (2 ** (attempt - 1))
+                logger.warning(
+                    "Embedding retry model=%s len=%s attempt=%s/%s wait=%.1fs error_type=%s error=%s",
+                    self.model,
+                    text_len,
+                    attempt,
+                    self.max_retries,
+                    delay,
+                    type(e).__name__,
+                    str(e),
+                )
+                await asyncio.sleep(delay)
+
+        return None
+
     async def embed_batch(self, texts: List[str]) -> List[Optional[List[float]]]:
-        """批量文本向量化"""
-        try:
-            if not texts:
-                return []
+        """Embed texts in chunks to avoid provider batch-size limits."""
+        if not texts:
+            return []
 
-            valid_texts = [t for t in texts if t and t.strip()]
-            if not valid_texts:
-                return [None] * len(texts)
-
-            response = self.client.embeddings.create(
-                model=self.model,
-                input=valid_texts,
-                encoding_format="float"
-            )
-
-            embeddings = {i: data.embedding for i, data in enumerate(response.data)}
-
-            result = []
-            valid_idx = 0
-            for text in texts:
-                if text and text.strip():
-                    result.append(embeddings.get(valid_idx))
-                    valid_idx += 1
-                else:
-                    result.append(None)
-
-            logger.info(f"批量向量化成功，处理 {len(valid_texts)} 个文本")
-            return result
-
-        except Exception as e:
-            logger.error(f"批量向量化失败: {str(e)}")
+        valid_positions = [i for i, t in enumerate(texts) if t and t.strip()]
+        if not valid_positions:
             return [None] * len(texts)
+
+        valid_texts = [texts[i].strip() for i in valid_positions]
+        result: List[Optional[List[float]]] = [None] * len(texts)
+
+        total_chunks = (len(valid_texts) + self.max_batch_size - 1) // self.max_batch_size
+        success_chunks = 0
+
+        for chunk_idx in range(total_chunks):
+            start = chunk_idx * self.max_batch_size
+            end = min(start + self.max_batch_size, len(valid_texts))
+            chunk_texts = valid_texts[start:end]
+            chunk_positions = valid_positions[start:end]
+
+            chunk_embeddings: Optional[List[List[float]]] = None
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = self.client.embeddings.create(
+                        model=self.model,
+                        input=chunk_texts,
+                        encoding_format="float",
+                    )
+                    chunk_embeddings = [data.embedding for data in response.data]
+                    break
+                except Exception as e:
+                    if attempt >= self.max_retries:
+                        logger.error(
+                            "Batch embedding failed model=%s chunk=%s/%s batch=%s attempts=%s error_type=%s error=%s",
+                            self.model,
+                            chunk_idx + 1,
+                            total_chunks,
+                            len(chunk_texts),
+                            self.max_retries,
+                            type(e).__name__,
+                            str(e),
+                        )
+                        chunk_embeddings = None
+                        break
+
+                    delay = self.base_retry_delay * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Batch embedding retry model=%s chunk=%s/%s batch=%s attempt=%s/%s wait=%.1fs error_type=%s error=%s",
+                        self.model,
+                        chunk_idx + 1,
+                        total_chunks,
+                        len(chunk_texts),
+                        attempt,
+                        self.max_retries,
+                        delay,
+                        type(e).__name__,
+                        str(e),
+                    )
+                    await asyncio.sleep(delay)
+
+            if chunk_embeddings and len(chunk_embeddings) == len(chunk_positions):
+                for pos, emb in zip(chunk_positions, chunk_embeddings):
+                    result[pos] = emb
+                success_chunks += 1
+
+        missing_count = sum(1 for v in result if v is None)
+        logger.info(
+            "Batch embedding completed model=%s total=%s chunks=%s/%s missing=%s",
+            self.model,
+            len(valid_texts),
+            success_chunks,
+            total_chunks,
+            missing_count,
+        )
+        return result
 
     @staticmethod
     def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
-        """计算两个向量的余弦相似度"""
+        """Calculate cosine similarity between two vectors."""
         try:
             if not vec1 or not vec2:
                 return 0.0
@@ -102,15 +176,12 @@ class EmbeddingEngine:
             return float(similarity)
 
         except Exception as e:
-            logger.error(f"计算相似度失败: {str(e)}")
+            logger.error("Cosine similarity failed: %s", str(e))
             return 0.0
 
     @staticmethod
-    def batch_cosine_similarity(
-        query_vec: List[float],
-        vectors: List[List[float]]
-    ) -> List[float]:
-        """批量计算余弦相似度"""
+    def batch_cosine_similarity(query_vec: List[float], vectors: List[List[float]]) -> List[float]:
+        """Calculate cosine similarity between one query and multiple vectors."""
         try:
             if not query_vec or not vectors:
                 return [0.0] * len(vectors)
@@ -129,9 +200,8 @@ class EmbeddingEngine:
             docs_normalized = docs / docs_norm
 
             similarities = np.dot(docs_normalized, query_normalized)
-
             return similarities.tolist()
 
         except Exception as e:
-            logger.error(f"批量计算相似度失败: {str(e)}")
+            logger.error("Batch cosine similarity failed: %s", str(e))
             return [0.0] * len(vectors)

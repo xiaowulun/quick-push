@@ -42,10 +42,12 @@ jobs:
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
           FEISHU_RECEIVE_ID_TYPE: ${{ secrets.FEISHU_RECEIVE_ID_TYPE }}
+          SQLITE_DB_PATH: data/sqlite/analysis_cache.db
+          CHROMA_PERSIST_DIR: data/chroma
         run: python main.py
 
       - name: 保存 SQLite 数据库并推回仓库
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: update push history database"
-          file_pattern: "*.db" # 只提交数据库文件，防止误传其他临时文件
+          file_pattern: "data/sqlite/analysis_cache.db" # 只提交主 SQLite 数据库

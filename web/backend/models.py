@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 
 
@@ -41,11 +41,6 @@ class HotProject(BaseModel):
     category: Optional[str] = None
 
 
-class TrendChart(BaseModel):
-    date: str
-    count: int
-
-
 class TrendsResponse(BaseModel):
     period: str
     category_trends: List[CategoryTrend]
@@ -63,9 +58,9 @@ class SearchResult(BaseModel):
     category: Optional[str] = None
     language: Optional[str] = None
     stars: Optional[int] = None
-    keywords: List[str] = []
-    tech_stack: List[str] = []
-    use_cases: List[str] = []
+    keywords: List[str] = Field(default_factory=list)
+    tech_stack: List[str] = Field(default_factory=list)
+    use_cases: List[str] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):

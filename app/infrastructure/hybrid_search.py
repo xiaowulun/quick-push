@@ -53,13 +53,13 @@ class HybridSearchEngine:
                 embeddings.append(embedding)
                 ids.append(doc_id)
                 metadatas.append({
-                    "chunk_id": doc_id,
-                    "repo_full_name": doc.get("repo_full_name", ""),
+                    "chunk_id": doc_id or "",
+                    "repo_full_name": doc.get("repo_full_name") or "",
                     "chunk_index": doc.get("chunk_index", 0),
-                    "section": doc.get("section", ""),
-                    "summary": doc.get("summary", ""),
-                    "language": doc.get("language", ""),
-                    "category": doc.get("category", ""),
+                    "section": doc.get("section") or "",
+                    "summary": doc.get("summary") or "",
+                    "language": doc.get("language") or "",
+                    "category": doc.get("category") or "",
                     "keywords": ",".join(doc.get("keywords", [])),
                     "tech_stack": ",".join(doc.get("tech_stack", [])),
                     "use_cases": ",".join(doc.get("use_cases", []))

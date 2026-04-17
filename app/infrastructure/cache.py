@@ -1,17 +1,37 @@
-import sqlite3
 import json
-from datetime import datetime, date
-from typing import Optional, Dict, List
+import os
+import shutil
+import sqlite3
+from datetime import date, datetime
 from pathlib import Path
+from typing import Dict, List, Optional
 
 
 class AnalysisCache:
     """分析结果缓存，基于 SQLite"""
 
-    def __init__(self, db_path: str = ".cache/analysis_cache.db"):
-        self.db_path = Path(db_path)
+    DEFAULT_DB_PATH = Path("data/sqlite/analysis_cache.db")
+    LEGACY_DB_PATH = Path(".cache/analysis_cache.db")
+
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = Path(db_path or os.getenv("SQLITE_DB_PATH", str(self.DEFAULT_DB_PATH)))
+        self._migrate_legacy_db_if_needed(explicit_db_path=bool(db_path))
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+
+    def _migrate_legacy_db_if_needed(self, explicit_db_path: bool) -> None:
+        """
+        当未显式传入 db_path 且目标路径不存在时，
+        将历史 `.cache/analysis_cache.db` 自动复制到新目录。
+        """
+        if explicit_db_path:
+            return
+        if self.db_path.exists() or not self.LEGACY_DB_PATH.exists():
+            return
+        if self.LEGACY_DB_PATH.resolve() == self.db_path.resolve():
+            return
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.LEGACY_DB_PATH, self.db_path)
 
     def _init_db(self):
         """初始化数据库表"""
@@ -22,6 +42,7 @@ class AnalysisCache:
                     summary TEXT NOT NULL,
                     reasons TEXT NOT NULL,
                     analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    readme_content TEXT,
                     search_text TEXT,
                     embedding TEXT,
                     keywords TEXT,
@@ -35,6 +56,7 @@ class AnalysisCache:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     record_date DATE NOT NULL,
                     repo_full_name TEXT NOT NULL,
+                    description TEXT,
                     language TEXT,
                     stars INTEGER,
                     stars_today INTEGER,
@@ -71,14 +93,25 @@ class AnalysisCache:
                 )
             """)
 
+            self._ensure_column(conn, "analysis_cache", "readme_content TEXT")
+            self._ensure_column(conn, "trending_history", "description TEXT")
+
             conn.commit()
+
+    def _ensure_column(self, conn: sqlite3.Connection, table_name: str, column_def: str) -> None:
+        """确保旧数据库具备新增列（轻量迁移）。"""
+        column_name = column_def.split()[0]
+        cursor = conn.execute(f"PRAGMA table_info({table_name})")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        if column_name not in existing_columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
 
     def get(self, repo_full_name: str) -> Optional[Dict]:
         """获取缓存的分析结果"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                "SELECT summary, reasons, analyzed_at FROM analysis_cache WHERE repo_full_name = ?",
+                "SELECT summary, reasons, analyzed_at, readme_content FROM analysis_cache WHERE repo_full_name = ?",
                 (repo_full_name,)
             )
             row = cursor.fetchone()
@@ -87,7 +120,8 @@ class AnalysisCache:
                 return {
                     "summary": row["summary"],
                     "reasons": json.loads(row["reasons"]),
-                    "analyzed_at": row["analyzed_at"]
+                    "analyzed_at": row["analyzed_at"],
+                    "readme_content": row["readme_content"] or ""
                 }
             return None
 
@@ -112,34 +146,11 @@ class AnalysisCache:
             )
             return cursor.fetchone() is not None
 
-    def clear(self):
-        """清空所有缓存"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM analysis_cache")
-            conn.commit()
-
-    def get_stats(self) -> Dict:
-        """获取缓存统计信息"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM analysis_cache")
-            analysis_count = cursor.fetchone()[0]
-
-            cursor = conn.execute("SELECT COUNT(*) FROM trending_history")
-            history_count = cursor.fetchone()[0]
-
-            cursor = conn.execute("SELECT COUNT(*) FROM repo_info")
-            repo_count = cursor.fetchone()[0]
-
-            return {
-                "total_cached": analysis_count,
-                "trending_records": history_count,
-                "tracked_repos": repo_count
-            }
-
     def save_trending_record(
         self,
         record_date: date,
         repo_full_name: str,
+        description: str,
         language: str,
         stars: int,
         stars_today: int,
@@ -152,10 +163,10 @@ class AnalysisCache:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO trending_history
-                (record_date, repo_full_name, language, stars, stars_today, rank, since_type, category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (record_date, repo_full_name, description, language, stars, stars_today, rank, since_type, category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (record_date, repo_full_name, language, stars, stars_today, rank, since_type, category)
+                (record_date, repo_full_name, description, language, stars, stars_today, rank, since_type, category)
             )
 
             conn.execute(
@@ -203,85 +214,12 @@ class AnalysisCache:
             cursor = conn.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_hot_repos(self, days: int = 7, limit: int = 10) -> List[Dict]:
-        """获取近期热门项目（上榜次数最多）"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                """
-                SELECT
-                    repo_full_name,
-                    COUNT(*) as appearances,
-                    AVG(rank) as avg_rank,
-                    MAX(record_date) as last_seen
-                FROM trending_history
-                WHERE record_date >= date('now', '-{} days')
-                GROUP BY repo_full_name
-                ORDER BY appearances DESC, avg_rank ASC
-                LIMIT {}
-                """.format(days, limit)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_category_trends(self, days: int = 7) -> List[Dict]:
-        """获取分类趋势统计"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                """
-                SELECT
-                    category,
-                    COUNT(*) as count,
-                    COUNT(DISTINCT record_date) as days
-                FROM trending_history
-                WHERE record_date >= date('now', '-{} days')
-                AND category IS NOT NULL
-                GROUP BY category
-                ORDER BY count DESC
-                """.format(days)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_new_stars(self, days: int = 7, limit: int = 5) -> List[Dict]:
-        """获取新星项目（首次上榜）"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                """
-                SELECT DISTINCT
-                    th.repo_full_name,
-                    th.record_date,
-                    th.rank,
-                    th.stars,
-                    th.category
-                FROM trending_history th
-                JOIN repo_info ri ON th.repo_full_name = ri.repo_full_name
-                WHERE th.record_date >= date('now', '-{} days')
-                AND ri.first_seen >= date('now', '-{} days')
-                ORDER BY th.rank ASC
-                LIMIT {}
-                """.format(days, days, limit)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-    def generate_trend_report(self, days: int = 7) -> Dict:
-        """生成趋势报表"""
-        return {
-            "period": f"最近 {days} 天",
-            "hot_repos": self.get_hot_repos(days),
-            "category_trends": self.get_category_trends(days),
-            "new_stars": self.get_new_stars(days),
-            "total_records": len(self.get_trending_history(
-                start_date=date.today().isoformat(),
-                end_date=date.today().isoformat()
-            ))
-        }
-
     def set_with_embedding(
         self,
         repo_full_name: str,
         summary: str,
         reasons: list,
+        readme_content: str = None,
         search_text: str = None,
         embedding: list = None,
         keywords: list = None,
@@ -293,14 +231,15 @@ class AnalysisCache:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO analysis_cache
-                (repo_full_name, summary, reasons, analyzed_at, search_text, embedding, keywords, tech_stack, use_cases)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (repo_full_name, summary, reasons, analyzed_at, readme_content, search_text, embedding, keywords, tech_stack, use_cases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_full_name,
                     summary,
                     json.dumps(reasons),
                     datetime.now().isoformat(),
+                    readme_content,
                     search_text,
                     json.dumps(embedding) if embedding else None,
                     json.dumps(keywords) if keywords else None,
@@ -316,7 +255,7 @@ class AnalysisCache:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 """
-                SELECT summary, reasons, search_text, embedding, keywords, tech_stack, use_cases, analyzed_at
+                SELECT summary, reasons, readme_content, search_text, embedding, keywords, tech_stack, use_cases, analyzed_at
                 FROM analysis_cache
                 WHERE repo_full_name = ?
                 """,
@@ -328,6 +267,7 @@ class AnalysisCache:
                 return {
                     "summary": row["summary"],
                     "reasons": json.loads(row["reasons"]),
+                    "readme_content": row["readme_content"] or "",
                     "search_text": row["search_text"],
                     "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
                     "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
@@ -347,6 +287,7 @@ class AnalysisCache:
                     ac.repo_full_name,
                     ac.summary,
                     ac.reasons,
+                    ac.readme_content,
                     ac.search_text,
                     ac.embedding,
                     ac.keywords,
@@ -376,6 +317,7 @@ class AnalysisCache:
                     "repo_full_name": row["repo_full_name"],
                     "summary": row["summary"],
                     "reasons": json.loads(row["reasons"]),
+                    "readme_content": row["readme_content"] or "",
                     "search_text": row["search_text"],
                     "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
                     "keywords": json.loads(row["keywords"]) if row["keywords"] else [],

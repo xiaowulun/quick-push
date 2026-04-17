@@ -31,6 +31,11 @@
         <div class="spinner spinner-sm"></div>
         <span>{{ status }}</span>
       </div>
+
+      <div v-if="lastFailedQuery && !isStreaming" class="chat-retry">
+        <span class="chat-retry-text">上次请求失败：{{ lastFailureReason || '请重试' }}</span>
+        <button class="chat-retry-btn" @click="handleRetry">重试</button>
+      </div>
     </div>
     
     <div class="chat-input-container">
@@ -45,7 +50,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, inject, watch } from 'vue'
+import { ref, reactive, nextTick, inject, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import LogoIcon from '@/components/LogoIcon.vue'
 import ChatMessage from '@/components/ChatMessage.vue'
@@ -62,6 +67,9 @@ const messagesContainer = ref(null)
 const chatInput = ref(null)
 const abortController = ref(null)
 const sessionId = ref(null)
+const lastFailedQuery = ref('')
+const lastFailureReason = ref('')
+const STORAGE_KEY = 'quickpush-chat'
 
 const timeFilter = inject('timeFilter')
 
@@ -80,20 +88,54 @@ watch(() => route.path, () => {
   }
 })
 
+onMounted(() => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      messages.value = parsed.messages || []
+      sessionId.value = parsed.sessionId || null
+    }
+  } catch (e) {
+    console.warn('恢复聊天记录失败', e)
+  }
+
+  if (route.path === '/chat') {
+    nextTick(() => chatInput.value?.focus())
+  }
+})
+
+watch([messages, sessionId], ([msgs, sid]) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      messages: msgs,
+      sessionId: sid
+    }))
+  } catch (e) {
+    console.warn('保存聊天记录失败', e)
+  }
+}, { deep: true })
+
 async function handleSend(text) {
+  if (isStreaming.value) return
+
+  lastFailedQuery.value = ''
+  lastFailureReason.value = ''
   messages.value.push({
     role: 'user',
     content: text
   })
   
   isStreaming.value = true
-  status.value = '正在思考...'
+  status.value = '正在思考中...'
   
-  let currentMessage = {
+  const currentMessage = reactive({
     role: 'assistant',
     content: '',
     projects: []
-  }
+  })
+
+  let assistantAdded = false
   
   abortController.value = new AbortController()
   
@@ -111,19 +153,43 @@ async function handleSend(text) {
         currentMessage.projects = data.projects
       } else if (data.type === 'content_start') {
         status.value = ''
-        messages.value.push(currentMessage)
+        if (!assistantAdded) {
+          messages.value.push(currentMessage)
+          assistantAdded = true
+        }
       } else if (data.type === 'content') {
+        if (!assistantAdded) {
+          status.value = ''
+          messages.value.push(currentMessage)
+          assistantAdded = true
+        }
         currentMessage.content += data.content
       } else if (data.type === 'error') {
-        currentMessage.content = `❌ ${data.content}`
+        if (!assistantAdded) {
+          status.value = ''
+          messages.value.push(currentMessage)
+          assistantAdded = true
+        }
+        const codeText = data.code ? ` [${data.code}]` : ''
+        currentMessage.content = `出错了${codeText}：${data.content}`
+        lastFailedQuery.value = text
+        lastFailureReason.value = data.content || '服务异常，请重试。'
       }
     }
   } catch (err) {
     if (err.name !== 'AbortError') {
+      const timeoutHint = err.name === 'TimeoutError' || err.code === 'CHAT_TIMEOUT'
+      const message = timeoutHint
+        ? `请求超时：${err.message}`
+        : `出错了：${err.message}`
       messages.value.push({
         role: 'assistant',
-        content: `❌ 网络错误: ${err.message}`
+        content: message
       })
+      lastFailedQuery.value = text
+      lastFailureReason.value = timeoutHint
+        ? '响应超时，建议重试。'
+        : (err.message || '请求失败，请重试。')
     }
   } finally {
     isStreaming.value = false
@@ -143,12 +209,17 @@ function handleStop() {
   status.value = ''
   messages.value.push({
     role: 'assistant',
-    content: '⏱️ 已停止生成'
+    content: '已停止生成，您可以继续提问。'
   })
 }
 
 function handleSuggestion(text) {
   handleSend(text)
+}
+
+function handleRetry() {
+  if (!lastFailedQuery.value || isStreaming.value) return
+  handleSend(lastFailedQuery.value)
 }
 </script>
 
@@ -238,10 +309,49 @@ function handleSuggestion(text) {
 .chat-status {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
+  align-self: flex-start;
   gap: 10px;
   color: var(--text-secondary);
   font-size: 13px;
-  padding: 8px 0;
+  padding: 8px 16px;
+  margin-left: 0;
+}
+
+.chat-status .spinner {
+  margin: 0;
+}
+
+.chat-retry {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  margin: 8px 0 0 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 184, 77, 0.35);
+  background: rgba(255, 184, 77, 0.1);
+  align-self: flex-start;
+}
+
+.chat-retry-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.chat-retry-btn {
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.chat-retry-btn:hover {
+  border-color: rgba(123, 104, 238, 0.6);
 }
 
 .chat-input-container {

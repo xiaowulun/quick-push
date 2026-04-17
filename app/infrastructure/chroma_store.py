@@ -5,8 +5,9 @@ ChromaDB 向量存储模块
 """
 
 import logging
-from typing import List, Dict, Optional
+import os
 from pathlib import Path
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,10 @@ logger = logging.getLogger(__name__)
 class ChromaVectorStore:
     """ChromaDB 向量存储"""
 
-    def __init__(self, persist_dir: str = ".chroma_db"):
-        self.persist_dir = Path(persist_dir)
+    DEFAULT_PERSIST_DIR = Path("data/chroma")
+
+    def __init__(self, persist_dir: Optional[str] = None):
+        self.persist_dir = Path(persist_dir or os.getenv("CHROMA_PERSIST_DIR", str(self.DEFAULT_PERSIST_DIR)))
         self.persist_dir.mkdir(parents=True, exist_ok=True)
 
         self._client = None
@@ -71,10 +74,11 @@ class ChromaVectorStore:
         try:
             safe_id = self._safe_id(repo_full_name)
 
+            safe_metadata = self._sanitize_metadata(metadata or {})
             self.collection.upsert(
                 ids=[safe_id],
                 embeddings=[embedding],
-                metadatas=[metadata or {}],
+                metadatas=[safe_metadata],
                 documents=[repo_full_name]
             )
 
@@ -104,11 +108,12 @@ class ChromaVectorStore:
         """
         try:
             safe_ids = [self._safe_id(id_) for id_ in ids]
+            safe_metadatas = [self._sanitize_metadata(m) for m in (metadatas or [{}] * len(ids))]
 
             self.collection.upsert(
                 ids=safe_ids,
                 embeddings=embeddings,
-                metadatas=metadatas or [{}] * len(ids),
+                metadatas=safe_metadatas,
                 documents=ids
             )
 
@@ -229,20 +234,24 @@ class ChromaVectorStore:
             logger.error(f"获取所有 ID 失败: {str(e)}")
             return []
 
-    def clear(self) -> bool:
-        """清空所有向量"""
-        try:
-            self.client.delete_collection(self.collection_name)
-            self._collection = None
-            logger.info("向量库已清空")
-            return True
-        except Exception as e:
-            logger.error(f"清空向量库失败: {str(e)}")
-            return False
-
     def _safe_id(self, id_: str) -> str:
         """
         生成安全的 ID（ChromaDB 对 ID 有长度限制）
         """
         import hashlib
         return hashlib.md5(id_.encode()).hexdigest()
+
+    def _sanitize_metadata(self, metadata: Optional[Dict]) -> Dict:
+        """Chroma metadata only accepts scalar values and cannot contain None."""
+        if not metadata:
+            return {}
+
+        sanitized = {}
+        for key, value in metadata.items():
+            if value is None:
+                sanitized[key] = ""
+            elif isinstance(value, (str, int, float, bool)):
+                sanitized[key] = value
+            else:
+                sanitized[key] = str(value)
+        return sanitized

@@ -75,6 +75,7 @@ class Summarizer:
                 repo_name=repo_name,
                 repo_data=repo_data,
                 readme_content=cleaned_content,
+                raw_readme_content=readme_content,
                 description=description,
                 category=""
             )

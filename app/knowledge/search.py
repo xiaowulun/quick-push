@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.analysis.readme import clean_readme_for_retrieval, split_readme_sections_for_retrieval
 from app.infrastructure.cache import AnalysisCache
 from app.infrastructure.chroma_store import ChromaVectorStore
 from app.infrastructure.embedding import EmbeddingEngine
@@ -79,6 +80,7 @@ class SearchService:
         repo_full_name: str,
         summary: str,
         reasons: List[str],
+        readme_content: str = "",
         language: str = "",
         category: str = "",
         keywords: List[str] = None,
@@ -109,6 +111,7 @@ class SearchService:
                 repo_full_name=repo_full_name,
                 summary=summary,
                 reasons=reasons,
+                readme_content=readme_content,
                 search_text=search_text,
                 embedding=embedding,
                 keywords=keywords,
@@ -120,6 +123,7 @@ class SearchService:
                 repo_full_name=repo_full_name,
                 summary=summary,
                 reasons=reasons,
+                readme_content=readme_content,
                 language=language,
                 category=category,
                 keywords=keywords,
@@ -149,13 +153,13 @@ class SearchService:
                 embeddings=[c["embedding"] for c in valid_chunks],
                 metadatas=[
                     {
-                        "chunk_id": c["chunk_id"],
-                        "repo_full_name": c["repo_full_name"],
+                        "chunk_id": c["chunk_id"] or "",
+                        "repo_full_name": c["repo_full_name"] or "",
                         "chunk_index": c["chunk_index"],
-                        "section": c.get("section", ""),
-                        "summary": c.get("summary", ""),
-                        "language": c.get("language", ""),
-                        "category": c.get("category", ""),
+                        "section": c.get("section") or "",
+                        "summary": c.get("summary") or "",
+                        "language": c.get("language") or "",
+                        "category": c.get("category") or "",
                         "keywords": ",".join(c.get("keywords", [])),
                         "tech_stack": ",".join(c.get("tech_stack", [])),
                         "use_cases": ",".join(c.get("use_cases", [])),
@@ -177,6 +181,7 @@ class SearchService:
         repo_full_name: str,
         summary: str,
         reasons: List[str],
+        readme_content: str,
         language: str,
         category: str,
         keywords: List[str],
@@ -186,27 +191,40 @@ class SearchService:
     ) -> List[Dict]:
         """把项目内容切分为多个可检索 chunk。"""
         sections: List[Tuple[str, str]] = []
+        readme_sections: List[Tuple[str, str]] = []
 
-        if summary:
-            sections.append(("summary", summary.strip()))
+        if readme_content and readme_content.strip():
+            cleaned_readme = clean_readme_for_retrieval(readme_content)
+            for section in split_readme_sections_for_retrieval(cleaned_readme):
+                section_title = (section.get("section") or "README").strip()
+                section_text = (section.get("text") or "").strip()
+                if len(section_text) < 20:
+                    continue
+                readme_sections.append((f"readme:{section_title[:80]}", section_text))
 
-        for reason in reasons or []:
-            reason = (reason or "").strip()
-            if reason:
-                sections.append(("reason", reason))
+        # README 作为主检索来源；只有缺失 README 时才使用 summary/reason 等信息作为备份。
+        if readme_sections:
+            sections = readme_sections[:16]
+        else:
+            if summary:
+                sections.append(("summary", summary.strip()))
 
-        if keywords:
-            sections.append(("keywords", "关键词: " + "、".join(keywords)))
+            for reason in reasons or []:
+                reason = (reason or "").strip()
+                if reason:
+                    sections.append(("reason", reason))
 
-        if tech_stack:
-            sections.append(("tech_stack", "技术栈: " + "、".join(tech_stack)))
+            if keywords:
+                sections.append(("keywords", "关键词: " + "、".join(keywords)))
 
-        if use_cases:
-            sections.append(("use_cases", "使用场景: " + "、".join(use_cases)))
+            if tech_stack:
+                sections.append(("tech_stack", "技术栈: " + "、".join(tech_stack)))
 
-        # 加一段结构化文本，保证通用召回效果。
-        if search_text:
-            sections.append(("overview", search_text.strip()))
+            if use_cases:
+                sections.append(("use_cases", "使用场景: " + "、".join(use_cases)))
+
+            if search_text:
+                sections.append(("fallback", search_text.strip()))
 
         chunks: List[Dict] = []
         idx = 0
@@ -298,6 +316,7 @@ class SearchService:
                 repo_full_name=repo_name,
                 summary=project.get("summary", ""),
                 reasons=project.get("reasons", []),
+                readme_content=project.get("readme_content") or project.get("readme") or "",
                 language=project.get("language", ""),
                 category=project.get("category", ""),
                 keywords=project.get("keywords", []),
@@ -370,6 +389,30 @@ class SearchService:
         for repo_name, chunks in grouped.items():
             chunks.sort(key=lambda x: x.get("rerank_score", x.get("rrf_score", 0.0)), reverse=True)
 
+            merged_keywords: List[str] = []
+            merged_tech_stack: List[str] = []
+            merged_use_cases: List[str] = []
+            seen_keywords = set()
+            seen_tech_stack = set()
+            seen_use_cases = set()
+
+            for chunk in chunks[:8]:
+                for item in chunk.get("keywords", []) or []:
+                    token = str(item).strip()
+                    if token and token not in seen_keywords:
+                        seen_keywords.add(token)
+                        merged_keywords.append(token)
+                for item in chunk.get("tech_stack", []) or []:
+                    token = str(item).strip()
+                    if token and token not in seen_tech_stack:
+                        seen_tech_stack.add(token)
+                        merged_tech_stack.append(token)
+                for item in chunk.get("use_cases", []) or []:
+                    token = str(item).strip()
+                    if token and token not in seen_use_cases:
+                        seen_use_cases.add(token)
+                        merged_use_cases.append(token)
+
             deduped_chunks = []
             seen_text = set()
             for chunk in chunks:
@@ -402,6 +445,9 @@ class SearchService:
                 "category": primary.get("category"),
                 "language": primary.get("language"),
                 "stars": primary.get("stars"),
+                "keywords": merged_keywords[:12],
+                "tech_stack": merged_tech_stack[:12],
+                "use_cases": merged_use_cases[:12],
                 "evidence_chunk": primary.get("chunk_text", ""),
                 "evidence_section": primary.get("section"),
             })
@@ -450,6 +496,29 @@ class SearchService:
         min_stars = getattr(filters, "min_stars", None)
         keywords = getattr(filters, "keywords", None) or []
         days = getattr(filters, "days", None)
+
+        valid_categories = {
+            "ai_ecosystem",
+            "infra_and_tools",
+            "product_and_ui",
+            "knowledge_base",
+        }
+        if category:
+            category_raw = str(category).strip().lower()
+            category_compact = category_raw.replace("-", "_").replace(" ", "")
+            normalized_category = None
+            for cat in valid_categories:
+                if cat in category_compact:
+                    normalized_category = cat
+                    break
+            category = normalized_category
+
+        normalized_keywords: List[str] = []
+        for kw in keywords:
+            text = re.sub(r"\s+", " ", str(kw).strip()).lower()
+            if text:
+                normalized_keywords.append(text)
+        keywords = normalized_keywords
 
         filtered = []
         cutoff_date = None
@@ -544,6 +613,7 @@ class SearchService:
                     repo_full_name=repo_name,
                     summary=analysis.get("summary", ""),
                     reasons=analysis.get("reasons", []),
+                    readme_content=analysis.get("readme_content", ""),
                     language=record.get("language", ""),
                     category=record.get("category", ""),
                 )

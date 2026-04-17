@@ -2,15 +2,18 @@ from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import Optional
 from datetime import date, timedelta
+from time import perf_counter
 import sys
 import os
 import json
+import logging
 import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from app.infrastructure.cache import AnalysisCache
 from app.infrastructure.config import get_config
+from app.infrastructure.logging import get_request_id
 from app.knowledge.search import SearchService
 from app.knowledge.chat import RAGChatService
 from ..models import (
@@ -20,10 +23,55 @@ from ..models import (
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
+logger = logging.getLogger(__name__)
 
 cache = AnalysisCache()
-search_service = SearchService()
-chat_service = RAGChatService()
+search_service: Optional[SearchService] = None
+chat_service: Optional[RAGChatService] = None
+search_service_init_error: Optional[str] = None
+chat_service_init_error: Optional[str] = None
+
+
+def _get_search_service() -> SearchService:
+    global search_service, search_service_init_error
+    if search_service is not None:
+        return search_service
+    if search_service_init_error:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "SEARCH_SERVICE_UNAVAILABLE", "message": f"搜索服务不可用: {search_service_init_error}"},
+        )
+    try:
+        search_service = SearchService()
+        return search_service
+    except Exception as e:
+        search_service_init_error = str(e)
+        logger.exception("搜索服务初始化失败")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "SEARCH_SERVICE_INIT_FAILED", "message": f"搜索服务初始化失败: {search_service_init_error}"},
+        )
+
+
+def _get_chat_service() -> RAGChatService:
+    global chat_service, chat_service_init_error
+    if chat_service is not None:
+        return chat_service
+    if chat_service_init_error:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CHAT_SERVICE_UNAVAILABLE", "message": f"对话服务不可用: {chat_service_init_error}"},
+        )
+    try:
+        chat_service = RAGChatService()
+        return chat_service
+    except Exception as e:
+        chat_service_init_error = str(e)
+        logger.exception("对话服务初始化失败")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CHAT_SERVICE_INIT_FAILED", "message": f"对话服务初始化失败: {chat_service_init_error}"},
+        )
 
 
 @router.get("/github/validate")
@@ -159,7 +207,7 @@ async def get_dashboard(days: int = 1):
         
         project = ProjectCard(
             repo_name=repo_name,
-            description=record.get("language", ""),
+            description=record.get("description") or "",
             summary=analysis.get("summary", "") if analysis else "",
             reasons=analysis.get("reasons", []) if analysis else [],
             stars=record.get("stars", 0),
@@ -274,7 +322,8 @@ async def search_projects(
     - **final_top_k**: 最终返回数量，默认5个
     """
     
-    results = await search_service.search_projects(
+    service = _get_search_service()
+    results = await service.search_projects(
         query=q,
         coarse_top_k=coarse_top_k,
         final_top_k=final_top_k
@@ -305,8 +354,8 @@ async def search_projects(
 @router.post("/search/index")
 async def index_projects():
     """重新索引所有项目（生成向量）"""
-    
-    stats = await search_service.reindex_all_projects()
+    service = _get_search_service()
+    stats = await service.reindex_all_projects()
     
     return {
         "message": "索引完成",
@@ -316,8 +365,8 @@ async def index_projects():
 @router.get("/search/stats")
 async def get_search_stats():
     """获取搜索统计信息"""
-    
-    stats = search_service.get_search_stats()
+    service = _get_search_service()
+    stats = service.get_search_stats()
     
     return stats
 
@@ -331,10 +380,52 @@ async def chat(request: ChatRequest):
     支持会话管理，传入 session_id 可保持上下文
     """
     
-    result = await chat_service.chat(
+    started = perf_counter()
+    service = _get_chat_service()
+    model_name = getattr(service, "model", "-")
+    req_session_id = request.session_id or "-"
+
+    result = await service.chat(
         query=request.query,
         top_k=request.top_k,
         session_id=request.session_id
+    )
+
+    latency_ms = int((perf_counter() - started) * 1000)
+    resolved_session_id = result.get("session_id") or req_session_id
+    request_id = get_request_id()
+
+    if not result.get("success", False):
+        status_code = int(result.get("status_code") or 500)
+        error_code = result.get("error_code") or "CHAT_INTERNAL_ERROR"
+        error_message = result.get("error_message") or result.get("answer") or "对话请求失败"
+        logger.warning(
+            "chat request failed code=%s status=%s",
+            error_code,
+            status_code,
+            extra={
+                "session_id": resolved_session_id,
+                "model": model_name,
+                "latency_ms": latency_ms,
+            },
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "code": error_code,
+                "message": error_message,
+                "request_id": request_id,
+                "session_id": resolved_session_id,
+            },
+        )
+
+    logger.info(
+        "chat request completed",
+        extra={
+            "session_id": resolved_session_id,
+            "model": model_name,
+            "latency_ms": latency_ms,
+        },
     )
     
     return ChatResponse(
@@ -365,14 +456,55 @@ async def chat_stream(request: ChatRequest):
     支持会话管理，传入 session_id 可保持上下文
     """
     
+    started = perf_counter()
+    service = _get_chat_service()
+    model_name = getattr(service, "model", "-")
+
     async def generate():
-        async for chunk in chat_service.chat_stream(
-            query=request.query,
-            top_k=request.top_k,
-            session_id=request.session_id
-        ):
-            data = json.dumps(chunk, ensure_ascii=False)
-            yield f"data: {data}\n\n"
+        resolved_session_id = request.session_id or "-"
+        last_error_code = None
+        try:
+            async for chunk in service.chat_stream(
+                query=request.query,
+                top_k=request.top_k,
+                session_id=request.session_id
+            ):
+                if chunk.get("type") == "session" and chunk.get("session_id"):
+                    resolved_session_id = chunk.get("session_id")
+                if chunk.get("type") == "error":
+                    last_error_code = chunk.get("code") or "CHAT_STREAM_ERROR"
+                data = json.dumps(chunk, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+        except Exception as e:
+            last_error_code = "CHAT_STREAM_INTERNAL_ERROR"
+            fallback = {
+                "type": "error",
+                "code": last_error_code,
+                "content": "流式对话异常中断，请重试。",
+            }
+            logger.exception("chat stream crashed: %s", str(e))
+            yield f"data: {json.dumps(fallback, ensure_ascii=False)}\n\n"
+
+        latency_ms = int((perf_counter() - started) * 1000)
+        if last_error_code:
+            logger.warning(
+                "chat stream finished with error code=%s",
+                last_error_code,
+                extra={
+                    "session_id": resolved_session_id,
+                    "model": model_name,
+                    "latency_ms": latency_ms,
+                },
+            )
+        else:
+            logger.info(
+                "chat stream completed",
+                extra={
+                    "session_id": resolved_session_id,
+                    "model": model_name,
+                    "latency_ms": latency_ms,
+                },
+            )
     
     return StreamingResponse(
         generate(),
