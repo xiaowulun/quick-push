@@ -6,6 +6,7 @@
 """
 
 import logging
+import hashlib
 import re
 from collections import defaultdict
 from datetime import date, timedelta
@@ -17,6 +18,7 @@ from app.infrastructure.chroma_store import ChromaVectorStore
 from app.infrastructure.embedding import EmbeddingEngine
 from app.infrastructure.hybrid_search import HybridSearchEngine
 from app.infrastructure.reranker import CrossEncoderReranker
+from app.knowledge.query_rewriter import QueryRewriter, QueryVariant
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ class SearchService:
         self.chroma_store = ChromaVectorStore()
         self.hybrid_engine = HybridSearchEngine(rrf_k=60)
         self.reranker = CrossEncoderReranker(model_name="BAAI/bge-reranker-base")
+        self.query_rewriter = QueryRewriter()
         self._initialized = False
 
     def _ensure_index(self) -> None:
@@ -61,6 +64,9 @@ class SearchService:
                 "chunk_index": 0,
                 "chunk_text": text,
                 "section": "legacy",
+                "path": "SUMMARY",
+                "heading": "legacy",
+                "updated_at": doc.get("repo_updated_at") or doc.get("source_updated_at"),
                 "embedding": doc.get("embedding"),
                 "keywords": doc.get("keywords", []),
                 "tech_stack": doc.get("tech_stack", []),
@@ -83,6 +89,7 @@ class SearchService:
         readme_content: str = "",
         language: str = "",
         category: str = "",
+        source_updated_at: Optional[str] = None,
         keywords: List[str] = None,
         tech_stack: List[str] = None,
         use_cases: List[str] = None
@@ -112,6 +119,8 @@ class SearchService:
                 summary=summary,
                 reasons=reasons,
                 readme_content=readme_content,
+                readme_hash=hashlib.sha256((readme_content or "").encode("utf-8")).hexdigest() if readme_content else None,
+                source_updated_at=source_updated_at,
                 search_text=search_text,
                 embedding=embedding,
                 keywords=keywords,
@@ -130,6 +139,7 @@ class SearchService:
                 tech_stack=tech_stack,
                 use_cases=use_cases,
                 search_text=search_text,
+                source_updated_at=source_updated_at,
             )
             if not chunks:
                 logger.warning(f"项目 {repo_full_name} 没有可索引 chunk")
@@ -157,6 +167,9 @@ class SearchService:
                         "repo_full_name": c["repo_full_name"] or "",
                         "chunk_index": c["chunk_index"],
                         "section": c.get("section") or "",
+                        "path": c.get("path") or "",
+                        "heading": c.get("heading") or "",
+                        "updated_at": c.get("updated_at") or "",
                         "summary": c.get("summary") or "",
                         "language": c.get("language") or "",
                         "category": c.get("category") or "",
@@ -188,6 +201,7 @@ class SearchService:
         tech_stack: List[str],
         use_cases: List[str],
         search_text: str,
+        source_updated_at: Optional[str],
     ) -> List[Dict]:
         """把项目内容切分为多个可检索 chunk。"""
         sections: List[Tuple[str, str]] = []
@@ -247,6 +261,9 @@ class SearchService:
                     "chunk_index": idx,
                     "chunk_text": chunk_text,
                     "section": section_name,
+                    "path": "README.md" if section_name.startswith("readme:") else "SUMMARY",
+                    "heading": section_name.split("readme:", 1)[1] if section_name.startswith("readme:") else section_name,
+                    "updated_at": source_updated_at,
                     "summary": summary or "",
                     "reasons": reasons or [],
                     "keywords": keywords or [],
@@ -319,6 +336,7 @@ class SearchService:
                 readme_content=project.get("readme_content") or project.get("readme") or "",
                 language=project.get("language", ""),
                 category=project.get("category", ""),
+                source_updated_at=project.get("repo_updated_at") or project.get("source_updated_at"),
                 keywords=project.get("keywords", []),
                 tech_stack=project.get("tech_stack", []),
                 use_cases=project.get("use_cases", []),
@@ -345,18 +363,28 @@ class SearchService:
                 return []
 
             coarse_k = max(coarse_top_k, final_top_k * 6)
-            coarse_results = await self.hybrid_engine.search(query=query, top_k=coarse_k)
-            if not coarse_results:
+            variants = self.query_rewriter.rewrite(query, max_variants=3)
+            variant_results = []
+            for variant in variants:
+                coarse_results = await self.hybrid_engine.search(query=variant.text, top_k=coarse_k)
+                filtered_results = self._apply_filters(coarse_results, filters)
+                if filtered_results:
+                    variant_results.append((variant, filtered_results))
+
+            if not variant_results:
                 return []
 
-            filtered_results = self._apply_filters(coarse_results, filters)
-            if not filtered_results:
+            fused_results = self._fuse_multi_query_results(
+                variant_results=variant_results,
+                top_k=max(coarse_top_k * 2, final_top_k * 12),
+            )
+            if not fused_results:
                 return []
 
-            rerank_k = min(len(filtered_results), max(final_top_k * 8, 20))
+            rerank_k = min(len(fused_results), max(final_top_k * 10, 30))
             reranked_chunks = await self.reranker.rerank(
                 query=query,
-                results=filtered_results,
+                results=fused_results,
                 top_k=rerank_k,
             )
 
@@ -375,6 +403,43 @@ class SearchService:
         except Exception as e:
             logger.error(f"搜索项目失败: {str(e)}")
             return []
+
+    def _fuse_multi_query_results(
+        self,
+        variant_results: List[Tuple[QueryVariant, List[Dict]]],
+        top_k: int,
+    ) -> List[Dict]:
+        """Fuse multi-query retrieval results via weighted RRF."""
+        if not variant_results:
+            return []
+
+        fused_scores: Dict[str, float] = {}
+        best_docs: Dict[str, Dict] = {}
+        k = max(1, int(getattr(self.hybrid_engine, "rrf_k", 60)))
+
+        for variant, docs in variant_results:
+            weight = max(0.05, float(variant.weight))
+            for rank, doc in enumerate(docs, start=1):
+                doc_id = doc.get("chunk_id") or doc.get("repo_full_name")
+                if not doc_id:
+                    continue
+                fused_scores[doc_id] = fused_scores.get(doc_id, 0.0) + (weight / (k + rank))
+                if doc_id not in best_docs:
+                    copied = doc.copy()
+                    copied["matched_queries"] = [variant.reason]
+                    best_docs[doc_id] = copied
+                else:
+                    matched = best_docs[doc_id].setdefault("matched_queries", [])
+                    if variant.reason not in matched:
+                        matched.append(variant.reason)
+
+        ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        results: List[Dict] = []
+        for doc_id, score in ranked[:top_k]:
+            doc = best_docs[doc_id].copy()
+            doc["multi_query_rrf_score"] = float(score)
+            results.append(doc)
+        return results
 
     def _aggregate_chunks_to_repos(self, chunk_results: List[Dict], top_k: int) -> List[Dict]:
         """把 chunk 结果聚合为 repo，并做去重和多样性控制。"""
@@ -450,6 +515,9 @@ class SearchService:
                 "use_cases": merged_use_cases[:12],
                 "evidence_chunk": primary.get("chunk_text", ""),
                 "evidence_section": primary.get("section"),
+                "path": primary.get("path"),
+                "heading": primary.get("heading") or primary.get("section"),
+                "updated_at": primary.get("updated_at"),
             })
 
         if not candidates:
@@ -616,6 +684,7 @@ class SearchService:
                     readme_content=analysis.get("readme_content", ""),
                     language=record.get("language", ""),
                     category=record.get("category", ""),
+                    source_updated_at=record.get("repo_updated_at"),
                 )
 
                 if success:

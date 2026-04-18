@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from app.infrastructure.logging import get_logger
 from app.infrastructure.config import get_config
@@ -13,8 +15,76 @@ class Summarizer:
     def __init__(self, enable_cache: bool = False):
         config = get_config()
         self.max_retries = config.behavior.max_retries
+        self.cache_ttl_hours = max(0, int(getattr(config.behavior, "cache_ttl_hours", 168)))
         self.cache = AnalysisCache() if enable_cache else None
         self.agent_orchestrator = AgentOrchestrator()
+
+    @staticmethod
+    def _calc_readme_hash(readme_content: str) -> str:
+        return hashlib.sha256((readme_content or "").encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _parse_time(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _get_cached_if_fresh(
+        self,
+        repo_name: str,
+        readme_content: str,
+        source_updated_at: Optional[str],
+    ) -> Optional[Dict]:
+        if not self.cache:
+            return None
+
+        cached = self.cache.get(repo_name)
+        if not cached:
+            return None
+
+        current_hash = self._calc_readme_hash(readme_content)
+        cached_hash = (cached.get("readme_hash") or "").strip()
+
+        if cached_hash:
+            if cached_hash != current_hash:
+                return None
+        else:
+            cached_readme = cached.get("readme_content") or ""
+            if cached_readme and cached_readme != readme_content:
+                return None
+
+        if self.cache_ttl_hours > 0:
+            analyzed_at = self._parse_time(cached.get("analyzed_at"))
+            if analyzed_at is not None:
+                if analyzed_at.tzinfo is not None:
+                    analyzed_at = analyzed_at.astimezone().replace(tzinfo=None)
+                if datetime.now() - analyzed_at > timedelta(hours=self.cache_ttl_hours):
+                    return None
+
+        current_updated = self._parse_time(source_updated_at)
+        cached_updated = self._parse_time(cached.get("source_updated_at"))
+        if current_updated and cached_updated:
+            if current_updated.tzinfo is not None:
+                current_updated = current_updated.astimezone().replace(tzinfo=None)
+            if cached_updated.tzinfo is not None:
+                cached_updated = cached_updated.astimezone().replace(tzinfo=None)
+            if current_updated > cached_updated:
+                return None
+
+        return cached
 
     def summarize(
         self,
@@ -30,8 +100,12 @@ class Summarizer:
                 "reasons": ["无法分析，缺少README文件"]
             }
 
-        if self.cache and self.cache.exists(repo_name):
-            cached = self.cache.get(repo_name)
+        cached = self._get_cached_if_fresh(
+            repo_name=repo_name,
+            readme_content=readme_content,
+            source_updated_at=None,
+        )
+        if cached:
             logger.info(f"使用缓存结果: {repo_name}")
             return {
                 "summary": cached["summary"],
@@ -52,6 +126,7 @@ class Summarizer:
         description = repo.get("description")
         readme_content = repo.get("readme_content")
         repo_data = repo.get("repo_data", {})
+        source_updated_at = repo_data.get("pushed_at")
 
         if not readme_content:
             return {
@@ -59,8 +134,12 @@ class Summarizer:
                 "reasons": ["无法分析，缺少README文件"]
             }
 
-        if self.cache and self.cache.exists(repo_name):
-            cached = self.cache.get(repo_name)
+        cached = self._get_cached_if_fresh(
+            repo_name=repo_name,
+            readme_content=readme_content,
+            source_updated_at=source_updated_at,
+        )
+        if cached:
             logger.info(f"使用缓存结果: {repo_name}")
             return {
                 "summary": cached["summary"],
@@ -90,7 +169,14 @@ class Summarizer:
                 logger.info(f"✅ Multi-Agent 分析完成: {repo_name}")
 
                 if self.cache:
-                    self.cache.set(repo_name, result["summary"], result["reasons"])
+                    self.cache.set(
+                        repo_name,
+                        result["summary"],
+                        result["reasons"],
+                        readme_content=readme_content,
+                        readme_hash=self._calc_readme_hash(readme_content),
+                        source_updated_at=source_updated_at,
+                    )
                     logger.info(f"已缓存结果: {repo_name}")
 
                 return result

@@ -26,6 +26,7 @@ class Repo:
     topics: List[str] = None
     has_pages: bool = False
     license_key: Optional[str] = None
+    pushed_at: Optional[str] = None
 
 
 class GitHubFetcher:
@@ -84,6 +85,7 @@ class GitHubFetcher:
                             repo.topics = data.get("topics", [])
                             repo.has_pages = data.get("has_pages", False)
                             repo.license_key = data.get("license", {}).get("key") if data.get("license") else None
+                            repo.pushed_at = data.get("pushed_at")
                             logger.debug(f"获取项目详情成功: {repo.full_name}, topics={repo.topics}")
                         else:
                             logger.warning(f"获取项目详情失败: {repo.full_name}, status={resp.status}")

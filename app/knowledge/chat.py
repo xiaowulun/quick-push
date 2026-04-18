@@ -11,6 +11,8 @@ RAG 对话服务模块
 
 import asyncio
 import logging
+import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +40,11 @@ class RetrievedProject:
     language: Optional[str] = None
     stars: Optional[int] = None
     url: str = ""
+    source_id: Optional[str] = None
+    evidence_section: Optional[str] = None
+    evidence_path: Optional[str] = None
+    evidence_heading: Optional[str] = None
+    evidence_chunk: Optional[str] = None
 
 
 class RAGChatService:
@@ -141,6 +148,7 @@ class RAGChatService:
             timeout=self.request_timeout,
         )
         self.model = self.config.openai.model_chat
+        self.min_confidence = float(os.getenv("CHAT_MIN_CONFIDENCE", "0.42"))
         self.query_parser = get_query_parser()
 
     def _classify_chat_error(self, error: Exception) -> Dict[str, Any]:
@@ -272,6 +280,66 @@ class RAGChatService:
             keywords=normalized_keywords,
         )
 
+    @staticmethod
+    def _normalize_similarity(score: float) -> float:
+        """Map arbitrary rerank score to [0, 1]."""
+        try:
+            s = float(score)
+        except (TypeError, ValueError):
+            return 0.0
+        if 0.0 <= s <= 1.0:
+            return s
+        if s >= 20:
+            return 1.0
+        if s <= -20:
+            return 0.0
+        return 1.0 / (1.0 + math.exp(-s))
+
+    def _compute_retrieval_confidence(self, projects: List[RetrievedProject]) -> float:
+        if not projects:
+            return 0.0
+        scores = [self._normalize_similarity(p.similarity) for p in projects]
+        scores.sort(reverse=True)
+        top1 = scores[0]
+        avg_top = sum(scores[: min(3, len(scores))]) / min(3, len(scores))
+        top2 = scores[1] if len(scores) > 1 else 0.0
+        margin = max(0.0, min(1.0, top1 - top2))
+        confidence = 0.6 * top1 + 0.3 * avg_top + 0.1 * margin
+        return max(0.0, min(1.0, confidence))
+
+    @staticmethod
+    def _has_citations(answer: str) -> bool:
+        return bool(re.search(r"\[S\d+\]", answer or ""))
+
+    @staticmethod
+    def _build_source_appendix(projects: List[RetrievedProject]) -> str:
+        if not projects:
+            return "\n\n参考来源：当前检索未命中可引用项目。"
+        lines = ["", "", "参考来源："]
+        for p in projects[:5]:
+            sid = p.source_id or "-"
+            heading = p.evidence_heading or p.evidence_section or "README"
+            lines.append(f"[{sid}] {p.repo_full_name} | {heading} | {p.url}")
+        return "\n".join(lines)
+
+    def _build_low_confidence_answer(
+        self,
+        query: str,
+        projects: List[RetrievedProject],
+        confidence: float,
+    ) -> str:
+        head = (
+            f"当前无法给出高置信度结论（置信度 {confidence:.2f} < 阈值 {self.min_confidence:.2f}）。"
+            " 我先不直接下结论，建议你缩小问题范围后重试。"
+        )
+        suggestions = [
+            "建议重试方式：",
+            f"1. 增加技术关键词，例如：`{query} + 语言/框架名`",
+            "2. 指定范围，例如：最近 7 天、某一语言、某一类别",
+            "3. 如果你要对比，请明确对比维度（性能/易用性/部署成本）",
+        ]
+        return "\n".join([head, *suggestions, self._build_source_appendix(projects)])
+
     async def retrieve_projects(
         self,
         query: str,
@@ -303,7 +371,7 @@ class RAGChatService:
                 return []
 
             retrieved = []
-            for item in results:
+            for idx, item in enumerate(results, 1):
                 project = RetrievedProject(
                     repo_full_name=item.get("repo_full_name", ""),
                     summary=item.get("summary", ""),
@@ -312,7 +380,12 @@ class RAGChatService:
                     category=item.get("category"),
                     language=item.get("language"),
                     stars=item.get("stars"),
-                    url=f"https://github.com/{item.get('repo_full_name', '')}"
+                    url=f"https://github.com/{item.get('repo_full_name', '')}",
+                    source_id=f"S{idx}",
+                    evidence_section=item.get("evidence_section"),
+                    evidence_path=item.get("path") or "README.md",
+                    evidence_heading=item.get("heading") or item.get("evidence_section"),
+                    evidence_chunk=item.get("evidence_chunk"),
                 )
                 retrieved.append(project)
 
@@ -332,14 +405,21 @@ class RAGChatService:
         for i, project in enumerate(projects, 1):
             stars_str = f"⭐ {project.stars:,}" if project.stars else ""
             lang_str = f"[{project.language}]" if project.language else ""
-            
-            project_info = f"""### 项目 {i}: {project.repo_full_name}
+            source_id = project.source_id or f"S{i}"
+            heading = project.evidence_heading or project.evidence_section or "README"
+            snippet = (project.evidence_chunk or "").strip()
+            if len(snippet) > 220:
+                snippet = snippet[:220] + "..."
+
+            project_info = f"""### [{source_id}] 项目 {i}: {project.repo_full_name}
 - 语言：{lang_str}
 - Stars: {stars_str}
 - 分类：{project.category or '未分类'}
 - 项目简介：{project.summary}
+- 证据位置：{project.evidence_path or 'README.md'} / {heading}
 - 核心特点:
 {chr(10).join(f'  • {r}' for r in project.reasons)}
+- 证据片段：{snippet or '（无）'}
 - GitHub: {project.url}"""
             context_parts.append(project_info)
 
@@ -494,6 +574,27 @@ class RAGChatService:
                 session.query_count += 1
             return
 
+        retrieval_confidence = self._compute_retrieval_confidence(projects)
+        if retrieval_confidence < self.min_confidence:
+            low_conf_answer = self._build_low_confidence_answer(query, projects, retrieval_confidence)
+            yield {
+                "type": "status",
+                "content": "检索证据不足，已触发低置信拒答模板。"
+            }
+            yield {"type": "content_start"}
+            yield {"type": "content", "content": low_conf_answer}
+            session.add_to_history(query, low_conf_answer, [
+                {
+                    "repo_full_name": p.repo_full_name,
+                    "summary": p.summary,
+                    "similarity": p.similarity
+                }
+                for p in projects
+            ])
+            session.query_count += 1
+            yield {"type": "done"}
+            return
+
         yield {
             "type": "status",
             "content": f"找到 {len(projects)} 个相关项目，正在生成回答..."
@@ -546,6 +647,14 @@ class RAGChatService:
                         "type": "content",
                         "content": content
                     }
+
+            if not self._has_citations(full_answer):
+                appendix = self._build_source_appendix(projects)
+                full_answer += appendix
+                yield {
+                    "type": "content",
+                    "content": appendix
+                }
 
             session.add_to_history(query, full_answer, [
                 {
@@ -645,6 +754,35 @@ class RAGChatService:
                     "status_code": err["status_code"],
                 }
 
+        retrieval_confidence = self._compute_retrieval_confidence(projects)
+        if retrieval_confidence < self.min_confidence:
+            answer = self._build_low_confidence_answer(query, projects, retrieval_confidence)
+            session.add_to_history(query, answer, [
+                {
+                    "repo_full_name": p.repo_full_name,
+                    "summary": p.summary,
+                    "similarity": p.similarity
+                }
+                for p in projects
+            ])
+            session.query_count += 1
+            return {
+                "answer": answer,
+                "projects": [
+                    {
+                        "repo_full_name": p.repo_full_name,
+                        "summary": p.summary,
+                        "similarity": round(p.similarity * 100, 1),
+                        "language": p.language,
+                        "stars": p.stars,
+                        "url": p.url
+                    }
+                    for p in projects
+                ],
+                "success": True,
+                "session_id": session.session_id
+            }
+
         projects_context = self._format_projects_context(projects)
         prompt = self.RAG_PROMPT_TEMPLATE.format(
             query=query,
@@ -664,6 +802,8 @@ class RAGChatService:
             )
 
             answer = response.choices[0].message.content
+            if not self._has_citations(answer):
+                answer += self._build_source_appendix(projects)
 
             session.add_to_history(query, answer, [
                 {

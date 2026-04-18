@@ -43,6 +43,8 @@ class AnalysisCache:
                     reasons TEXT NOT NULL,
                     analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     readme_content TEXT,
+                    readme_hash TEXT,
+                    source_updated_at TEXT,
                     search_text TEXT,
                     embedding TEXT,
                     keywords TEXT,
@@ -57,6 +59,7 @@ class AnalysisCache:
                     record_date DATE NOT NULL,
                     repo_full_name TEXT NOT NULL,
                     description TEXT,
+                    repo_updated_at TEXT,
                     language TEXT,
                     stars INTEGER,
                     stars_today INTEGER,
@@ -84,6 +87,9 @@ class AnalysisCache:
                     chunk_index INTEGER NOT NULL,
                     chunk_text TEXT NOT NULL,
                     section TEXT,
+                    path TEXT,
+                    heading TEXT,
+                    updated_at TEXT,
                     embedding TEXT,
                     keywords TEXT,
                     tech_stack TEXT,
@@ -94,7 +100,13 @@ class AnalysisCache:
             """)
 
             self._ensure_column(conn, "analysis_cache", "readme_content TEXT")
+            self._ensure_column(conn, "analysis_cache", "readme_hash TEXT")
+            self._ensure_column(conn, "analysis_cache", "source_updated_at TEXT")
             self._ensure_column(conn, "trending_history", "description TEXT")
+            self._ensure_column(conn, "trending_history", "repo_updated_at TEXT")
+            self._ensure_column(conn, "analysis_chunks", "path TEXT")
+            self._ensure_column(conn, "analysis_chunks", "heading TEXT")
+            self._ensure_column(conn, "analysis_chunks", "updated_at TEXT")
 
             conn.commit()
 
@@ -111,7 +123,11 @@ class AnalysisCache:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                "SELECT summary, reasons, analyzed_at, readme_content FROM analysis_cache WHERE repo_full_name = ?",
+                """
+                SELECT summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at
+                FROM analysis_cache
+                WHERE repo_full_name = ?
+                """,
                 (repo_full_name,)
             )
             row = cursor.fetchone()
@@ -121,19 +137,38 @@ class AnalysisCache:
                     "summary": row["summary"],
                     "reasons": json.loads(row["reasons"]),
                     "analyzed_at": row["analyzed_at"],
-                    "readme_content": row["readme_content"] or ""
+                    "readme_content": row["readme_content"] or "",
+                    "readme_hash": row["readme_hash"] or "",
+                    "source_updated_at": row["source_updated_at"] or "",
                 }
             return None
 
-    def set(self, repo_full_name: str, summary: str, reasons: list):
+    def set(
+        self,
+        repo_full_name: str,
+        summary: str,
+        reasons: list,
+        readme_content: Optional[str] = None,
+        readme_hash: Optional[str] = None,
+        source_updated_at: Optional[str] = None,
+    ):
         """保存分析结果到缓存"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO analysis_cache (repo_full_name, summary, reasons, analyzed_at)
-                VALUES (?, ?, ?, ?)
+                INSERT OR REPLACE INTO analysis_cache
+                (repo_full_name, summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (repo_full_name, summary, json.dumps(reasons), datetime.now().isoformat())
+                (
+                    repo_full_name,
+                    summary,
+                    json.dumps(reasons),
+                    datetime.now().isoformat(),
+                    readme_content,
+                    readme_hash,
+                    source_updated_at,
+                )
             )
             conn.commit()
 
@@ -151,6 +186,7 @@ class AnalysisCache:
         record_date: date,
         repo_full_name: str,
         description: str,
+        repo_updated_at: Optional[str],
         language: str,
         stars: int,
         stars_today: int,
@@ -163,10 +199,21 @@ class AnalysisCache:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO trending_history
-                (record_date, repo_full_name, description, language, stars, stars_today, rank, since_type, category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (record_date, repo_full_name, description, repo_updated_at, language, stars, stars_today, rank, since_type, category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (record_date, repo_full_name, description, language, stars, stars_today, rank, since_type, category)
+                (
+                    record_date,
+                    repo_full_name,
+                    description,
+                    repo_updated_at,
+                    language,
+                    stars,
+                    stars_today,
+                    rank,
+                    since_type,
+                    category,
+                )
             )
 
             conn.execute(
@@ -220,6 +267,8 @@ class AnalysisCache:
         summary: str,
         reasons: list,
         readme_content: str = None,
+        readme_hash: Optional[str] = None,
+        source_updated_at: Optional[str] = None,
         search_text: str = None,
         embedding: list = None,
         keywords: list = None,
@@ -231,8 +280,11 @@ class AnalysisCache:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO analysis_cache
-                (repo_full_name, summary, reasons, analyzed_at, readme_content, search_text, embedding, keywords, tech_stack, use_cases)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    repo_full_name, summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at,
+                    search_text, embedding, keywords, tech_stack, use_cases
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_full_name,
@@ -240,6 +292,8 @@ class AnalysisCache:
                     json.dumps(reasons),
                     datetime.now().isoformat(),
                     readme_content,
+                    readme_hash,
+                    source_updated_at,
                     search_text,
                     json.dumps(embedding) if embedding else None,
                     json.dumps(keywords) if keywords else None,
@@ -255,7 +309,9 @@ class AnalysisCache:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 """
-                SELECT summary, reasons, readme_content, search_text, embedding, keywords, tech_stack, use_cases, analyzed_at
+                SELECT
+                    summary, reasons, readme_content, readme_hash, source_updated_at,
+                    search_text, embedding, keywords, tech_stack, use_cases, analyzed_at
                 FROM analysis_cache
                 WHERE repo_full_name = ?
                 """,
@@ -268,6 +324,8 @@ class AnalysisCache:
                     "summary": row["summary"],
                     "reasons": json.loads(row["reasons"]),
                     "readme_content": row["readme_content"] or "",
+                    "readme_hash": row["readme_hash"] or "",
+                    "source_updated_at": row["source_updated_at"] or "",
                     "search_text": row["search_text"],
                     "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
                     "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
@@ -288,6 +346,8 @@ class AnalysisCache:
                     ac.summary,
                     ac.reasons,
                     ac.readme_content,
+                    ac.readme_hash,
+                    ac.source_updated_at,
                     ac.search_text,
                     ac.embedding,
                     ac.keywords,
@@ -296,7 +356,8 @@ class AnalysisCache:
                     ri.category,
                     th.language,
                     th.stars,
-                    th.record_date
+                    th.record_date,
+                    th.repo_updated_at
                 FROM analysis_cache ac
                 LEFT JOIN repo_info ri ON ac.repo_full_name = ri.repo_full_name
                 LEFT JOIN (
@@ -304,6 +365,7 @@ class AnalysisCache:
                         repo_full_name, 
                         language, 
                         stars, 
+                        repo_updated_at,
                         record_date,
                         ROW_NUMBER() OVER (PARTITION BY repo_full_name ORDER BY record_date DESC) as rn
                     FROM trending_history
@@ -318,6 +380,8 @@ class AnalysisCache:
                     "summary": row["summary"],
                     "reasons": json.loads(row["reasons"]),
                     "readme_content": row["readme_content"] or "",
+                    "readme_hash": row["readme_hash"] or "",
+                    "source_updated_at": row["source_updated_at"] or "",
                     "search_text": row["search_text"],
                     "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
                     "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
@@ -326,7 +390,8 @@ class AnalysisCache:
                     "category": row["category"],
                     "language": row["language"],
                     "stars": row["stars"],
-                    "record_date": row["record_date"]
+                    "record_date": row["record_date"],
+                    "repo_updated_at": row["repo_updated_at"],
                 })
             return results
 
@@ -346,8 +411,11 @@ class AnalysisCache:
                 conn.execute(
                     """
                     INSERT INTO analysis_chunks
-                    (chunk_id, repo_full_name, chunk_index, chunk_text, section, embedding, keywords, tech_stack, use_cases, analyzed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (
+                        chunk_id, repo_full_name, chunk_index, chunk_text, section, path, heading, updated_at,
+                        embedding, keywords, tech_stack, use_cases, analyzed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         chunk["chunk_id"],
@@ -355,6 +423,9 @@ class AnalysisCache:
                         chunk["chunk_index"],
                         chunk["chunk_text"],
                         chunk.get("section"),
+                        chunk.get("path"),
+                        chunk.get("heading"),
+                        chunk.get("updated_at"),
                         json.dumps(chunk.get("embedding")) if chunk.get("embedding") else None,
                         json.dumps(chunk.get("keywords")) if chunk.get("keywords") else None,
                         json.dumps(chunk.get("tech_stack")) if chunk.get("tech_stack") else None,
@@ -377,6 +448,9 @@ class AnalysisCache:
                     c.chunk_index,
                     c.chunk_text,
                     c.section,
+                    c.path,
+                    c.heading,
+                    c.updated_at,
                     c.embedding,
                     c.keywords,
                     c.tech_stack,
@@ -412,6 +486,9 @@ class AnalysisCache:
                     "chunk_index": row["chunk_index"],
                     "chunk_text": row["chunk_text"],
                     "section": row["section"],
+                    "path": row["path"],
+                    "heading": row["heading"],
+                    "updated_at": row["updated_at"],
                     "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
                     "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
                     "tech_stack": json.loads(row["tech_stack"]) if row["tech_stack"] else [],

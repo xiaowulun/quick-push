@@ -47,6 +47,7 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
                 "topics": repo.topics if repo.topics else [],
                 "has_pages": repo.has_pages,
                 "license": repo.license_key,
+                "pushed_at": repo.pushed_at,
             }
         }
         for repo in repos
@@ -136,6 +137,7 @@ def _save_trending_data(repos, since_type: str):
                 record_date=today,
                 repo_full_name=repo.full_name,
                 description=repo.description or "",
+                repo_updated_at=repo.pushed_at,
                 language=repo.language or "Unknown",
                 stars=repo.stars,
                 stars_today=repo.stars_today,
