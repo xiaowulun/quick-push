@@ -21,6 +21,11 @@ const routes = [
     component: () => import('@/views/TrendsView.vue')
   },
   {
+    path: '/projects/:repoFullName(.*)',
+    name: 'ProjectDetail',
+    component: () => import('@/views/ProjectDetailView.vue')
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('@/views/SettingsView.vue')

@@ -37,3 +37,6 @@ def test_dashboard_uses_stored_description(monkeypatch):
     card = body["infra_and_tools"][0]
     assert card["description"] == "A real repo description"
     assert card["language"] == "Python"
+    assert card["keywords"] == []
+    assert card["tech_stack"] == []
+    assert card["use_cases"] == []

@@ -1,0 +1,91 @@
+{
+  "retrieval": {
+    "eval_queries": 102,
+    "baseline_mode": "vector",
+    "candidate_rerank_enabled": false,
+    "recall_at_k_baseline": 0.764706,
+    "recall_at_k_candidate": 0.931373,
+    "recall_delta": 0.166667,
+    "hit_at_1_baseline": 0.578431,
+    "hit_at_1_candidate": 0.794118,
+    "hit_at_1_delta": 0.215686,
+    "rerank_total_calls": null,
+    "rerank_effective_calls": null,
+    "rerank_effective_rate": null,
+    "rerank_reason_distribution": null
+  },
+  "retrieval_by_query_type": {
+    "direct": {
+      "count": 17,
+      "recall_at_k_baseline": 0.941176,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.058824,
+      "hit_at_1_baseline": 0.705882,
+      "hit_at_1_candidate": 0.823529,
+      "hit_at_1_delta": 0.117647
+    },
+    "paraphrase": {
+      "count": 17,
+      "recall_at_k_baseline": 0.941176,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.058824,
+      "hit_at_1_baseline": 0.764706,
+      "hit_at_1_candidate": 0.882353,
+      "hit_at_1_delta": 0.117647
+    },
+    "scenario": {
+      "count": 17,
+      "recall_at_k_baseline": 0.882353,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.117647,
+      "hit_at_1_baseline": 0.705882,
+      "hit_at_1_candidate": 0.941176,
+      "hit_at_1_delta": 0.235294
+    },
+    "constraint": {
+      "count": 17,
+      "recall_at_k_baseline": 0.705882,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.294118,
+      "hit_at_1_baseline": 0.588235,
+      "hit_at_1_candidate": 0.823529,
+      "hit_at_1_delta": 0.235294
+    },
+    "hard_negative": {
+      "count": 17,
+      "recall_at_k_baseline": 0.176471,
+      "recall_at_k_candidate": 0.588235,
+      "recall_delta": 0.411765,
+      "hit_at_1_baseline": 0.0,
+      "hit_at_1_candidate": 0.411765,
+      "hit_at_1_delta": 0.411765
+    },
+    "ambiguous": {
+      "count": 17,
+      "recall_at_k_baseline": 0.941176,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.058824,
+      "hit_at_1_baseline": 0.705882,
+      "hit_at_1_candidate": 0.882353,
+      "hit_at_1_delta": 0.176471
+    }
+  },
+  "hard_negative_confusion": {
+    "query_count": 17,
+    "top1_confused_as_hard_negative_baseline": 1.0,
+    "top1_confused_as_hard_negative_candidate": 0.588235
+  },
+  "traceability": {
+    "result_level_traceable_rate": 1.0,
+    "traceable_by_chunk_id_rate": 1.0,
+    "traceable_by_path_heading_rate": 1.0,
+    "traceable_results": 229,
+    "total_results": 229
+  },
+  "off_topic_proxy": {
+    "definition": "proxy = 1 - hit@1 (Top1 miss implies potential off-topic).",
+    "baseline": 0.421569,
+    "candidate": 0.205882,
+    "delta": -0.215686
+  }
+}

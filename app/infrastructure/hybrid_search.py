@@ -110,6 +110,13 @@ class HybridSearchEngine:
 
         return merged_results
 
+    async def vector_search(self, query: str, top_k: int = 20) -> List[Dict]:
+        """Public vector-only retrieval for evaluation and debugging."""
+        if not self.is_indexed or not self.documents:
+            logger.warning("索引未构建或文档为空")
+            return []
+        return await self._vector_search(query, top_k=top_k)
+
     async def _vector_search(self, query: str, top_k: int) -> List[Dict]:
         """向量检索"""
         try:

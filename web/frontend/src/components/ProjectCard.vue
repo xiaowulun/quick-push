@@ -1,59 +1,70 @@
 <template>
-  <div class="project-card" :class="{ expanded: isExpanded }">
+  <article
+    class="project-card"
+    role="button"
+    tabindex="0"
+    @click="goToDetail"
+    @keydown.enter.prevent="goToDetail"
+    @keydown.space.prevent="goToDetail"
+  >
     <div class="card-header">
       <div class="card-title-row">
-        <a 
-          :href="project.url" 
-          target="_blank" 
-          class="project-name"
-          @click.stop
-        >
+        <button class="project-name-btn" @click.stop="goToDetail">
           {{ project.repo_name }}
-        </a>
+        </button>
         <div class="project-stars">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
           </svg>
           {{ formattedStars }}
         </div>
       </div>
+
       <div class="card-actions">
-        <button class="action-btn" @click.stop="copyLink" title="复制链接">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="9" y="9" width="13" height="13" rx="2"/>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-          </svg>
-        </button>
-        <button class="action-btn expand-btn" @click.stop="toggleExpand" :title="isExpanded ? '收起' : '展开'">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpanded }">
-            <path d="M6 9l6 6 6-6"/>
-          </svg>
-        </button>
+        <a :href="project.url" target="_blank" rel="noopener" class="action-btn" @click.stop>GitHub</a>
+        <button class="action-btn" @click.stop="copyLink" title="复制链接">复制</button>
       </div>
     </div>
-    
+
     <div class="card-meta">
       <span class="language">{{ project.language }}</span>
-      <span class="stars-today">+{{ project.stars_today }} 今日</span>
+      <span class="stars-period">+{{ project.stars_today }} {{ starsPeriodLabel }}</span>
+      <span class="jump-tip">查看详情</span>
     </div>
-    
-    <transition name="expand">
-      <div v-if="isExpanded" class="card-details">
-        <p class="project-summary">{{ project.summary }}</p>
-        <div class="project-reasons">
-          <span v-for="reason in displayReasons" :key="reason" class="reason-tag">
-            {{ reason }}
-          </span>
+
+    <div class="card-details">
+      <p class="project-summary">{{ project.summary }}</p>
+
+      <div class="project-reasons">
+        <div v-for="reason in displayReasons" :key="reason" class="reason-row">
+          {{ reason }}
         </div>
       </div>
-    </transition>
-    
+
+      <div class="tag-groups">
+        <div v-if="project.use_cases?.length" class="tag-group">
+          <div class="tag-label">适用场景</div>
+          <div class="tag-list">
+            <span v-for="item in project.use_cases.slice(0, 6)" :key="`case-${item}`" class="tag-pill tag-pill-alt">{{ item }}</span>
+          </div>
+        </div>
+
+        <div v-if="project.tech_stack?.length" class="tag-group">
+          <div class="tag-label">技术栈</div>
+          <div class="tag-list">
+            <span v-for="item in project.tech_stack.slice(0, 8)" :key="`tech-${item}`" class="tag-pill">{{ item }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div v-if="copied" class="copy-toast">已复制链接</div>
-  </div>
+  </article>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 const props = defineProps({
   project: {
@@ -62,34 +73,45 @@ const props = defineProps({
   }
 })
 
-const isExpanded = ref(false)
+const router = useRouter()
 const copied = ref(false)
 
 const formattedStars = computed(() => {
-  const stars = props.project.stars
-  if (stars >= 10000) {
-    return (stars / 10000).toFixed(1) + '万'
-  } else if (stars >= 1000) {
-    return (stars / 1000).toFixed(1) + 'k'
-  }
-  return stars
+  const stars = Number(props.project.stars || 0)
+  if (stars >= 10000) return `${(stars / 10000).toFixed(1)}万`
+  if (stars >= 1000) return `${(stars / 1000).toFixed(1)}k`
+  return String(stars)
 })
 
-const displayReasons = computed(() => {
-  return props.project.reasons?.slice(0, 3) || []
+const displayReasons = computed(() => props.project.reasons?.slice(0, 4) || [])
+
+const starsPeriodLabel = computed(() => {
+  const sinceType = String(props.project?.since_type || '').toLowerCase()
+  if (sinceType === 'weekly') return '本周'
+  if (sinceType === 'monthly') return '本月'
+  return '今日'
 })
 
-function toggleExpand() {
-  isExpanded.value = !isExpanded.value
+const repoFullName = computed(() => {
+  if (props.project.repo_full_name) return props.project.repo_full_name
+  if (props.project.repo_name) return props.project.repo_name
+  const url = String(props.project.url || '')
+  const match = url.match(/github\.com\/([^/?#]+\/[^/?#]+)/i)
+  return match ? match[1] : ''
+})
+
+function goToDetail() {
+  if (!repoFullName.value) return
+  router.push({
+    name: 'ProjectDetail',
+    params: { repoFullName: repoFullName.value }
+  })
 }
 
 function copyLink() {
   const url = props.project.url
-  if (!url) {
-    alert('链接不存在')
-    return
-  }
-  
+  if (!url) return
+
   const textarea = document.createElement('textarea')
   textarea.value = url
   textarea.style.position = 'fixed'
@@ -99,20 +121,15 @@ function copyLink() {
   document.body.appendChild(textarea)
   textarea.focus()
   textarea.select()
-  
+
   try {
     const successful = document.execCommand('copy')
     if (successful) {
       copied.value = true
       setTimeout(() => {
         copied.value = false
-      }, 2000)
-    } else {
-      alert('复制失败，请手动复制：' + url)
+      }, 1600)
     }
-  } catch (err) {
-    console.error('Copy failed:', err)
-    alert('复制失败，请手动复制：' + url)
   } finally {
     document.body.removeChild(textarea)
   }
@@ -125,21 +142,21 @@ function copyLink() {
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 16px;
-  transition: all 0.3s ease;
+  transition: all 0.25s ease;
   position: relative;
-  align-self: start;
-  height: fit-content;
+  cursor: pointer;
 }
 
 .project-card:hover {
   border-color: var(--border-hover);
   background: rgba(123, 104, 238, 0.05);
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(123, 104, 238, 0.1);
+  box-shadow: 0 8px 24px rgba(123, 104, 238, 0.12);
 }
 
-.project-card.expanded {
-  background: rgba(30, 30, 45, 0.6);
+.project-card:focus-visible {
+  outline: 2px solid rgba(123, 104, 238, 0.5);
+  outline-offset: 2px;
 }
 
 .card-header {
@@ -147,29 +164,32 @@ function copyLink() {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
-  margin-bottom: 8px;
 }
 
 .card-title-row {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex: 1;
-  min-width: 0;
 }
 
-.project-name {
+.project-name-btn {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-primary);
   text-decoration: none;
-  transition: color 0.2s;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
 }
 
-.project-name:hover {
+.project-name-btn:hover {
   color: var(--primary-color);
 }
 
@@ -184,7 +204,7 @@ function copyLink() {
 
 .card-actions {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -192,13 +212,12 @@ function copyLink() {
   background: transparent;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 6px;
+  padding: 6px 8px;
   cursor: pointer;
   color: var(--text-secondary);
   transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  text-decoration: none;
+  font-size: 12px;
 }
 
 .action-btn:hover {
@@ -207,19 +226,17 @@ function copyLink() {
   color: var(--primary-color);
 }
 
-.expand-btn svg {
-  transition: transform 0.3s ease;
-}
-
-.expand-btn svg.rotated {
-  transform: rotate(180deg);
-}
-
 .card-meta {
   display: flex;
-  gap: 12px;
+  gap: 10px;
+  flex-wrap: wrap;
   font-size: 12px;
   color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.jump-tip {
+  color: var(--primary-light);
 }
 
 .card-details {
@@ -232,22 +249,59 @@ function copyLink() {
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.6;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .project-reasons {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.reason-row {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.tag-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.tag-group {
+  display: grid;
+  gap: 6px;
+}
+
+.tag-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tag-list {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.reason-tag {
+.tag-pill {
   font-size: 11px;
   padding: 4px 10px;
   background: rgba(123, 104, 238, 0.1);
   border: 1px solid rgba(123, 104, 238, 0.2);
-  border-radius: 20px;
-  color: var(--primary-color);
+  border-radius: 999px;
+  color: var(--primary-light);
+}
+
+.tag-pill-alt {
+  background: rgba(74, 144, 217, 0.1);
+  border-color: rgba(74, 144, 217, 0.25);
+  color: #7dc3ff;
 }
 
 .copy-toast {
@@ -256,26 +310,9 @@ function copyLink() {
   right: 8px;
   background: var(--primary-color);
   color: white;
-  padding: 4px 12px;
-  border-radius: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
   font-size: 12px;
   animation: fadeIn 0.2s ease;
-}
-
-.expand-enter-active,
-.expand-leave-active {
-  transition: all 0.3s ease;
-  overflow: hidden;
-}
-
-.expand-enter-from,
-.expand-leave-to {
-  opacity: 0;
-  max-height: 0;
-}
-
-.expand-enter-to,
-.expand-leave-from {
-  max-height: 200px;
 }
 </style>

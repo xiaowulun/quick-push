@@ -97,7 +97,10 @@ class Summarizer:
         if not readme_content:
             return {
                 "summary": "该项目没有README文件",
-                "reasons": ["无法分析，缺少README文件"]
+                "reasons": ["无法分析，缺少README文件"],
+                "keywords": [],
+                "tech_stack": [],
+                "use_cases": [],
             }
 
         cached = self._get_cached_if_fresh(
@@ -109,7 +112,10 @@ class Summarizer:
             logger.info(f"使用缓存结果: {repo_name}")
             return {
                 "summary": cached["summary"],
-                "reasons": cached["reasons"]
+                "reasons": cached["reasons"],
+                "keywords": cached.get("keywords", []),
+                "tech_stack": cached.get("tech_stack", []),
+                "use_cases": cached.get("use_cases", []),
             }
 
         return asyncio.run(self._summarize_async({
@@ -131,7 +137,10 @@ class Summarizer:
         if not readme_content:
             return {
                 "summary": "该项目没有README文件",
-                "reasons": ["无法分析，缺少README文件"]
+                "reasons": ["无法分析，缺少README文件"],
+                "keywords": [],
+                "tech_stack": [],
+                "use_cases": [],
             }
 
         cached = self._get_cached_if_fresh(
@@ -143,7 +152,10 @@ class Summarizer:
             logger.info(f"使用缓存结果: {repo_name}")
             return {
                 "summary": cached["summary"],
-                "reasons": cached["reasons"]
+                "reasons": cached["reasons"],
+                "keywords": cached.get("keywords", []),
+                "tech_stack": cached.get("tech_stack", []),
+                "use_cases": cached.get("use_cases", []),
             }
 
         cleaned_content = clean_readme_for_multimodal(readme_content)
@@ -164,6 +176,9 @@ class Summarizer:
                 result = {
                     "summary": result_data.get("summary", ""),
                     "reasons": result_data.get("reasons", []),
+                    "keywords": result_data.get("keywords", []),
+                    "tech_stack": result_data.get("tech_stack", []),
+                    "use_cases": result_data.get("use_cases", []),
                     "multi_agent": True,
                 }
                 logger.info(f"✅ Multi-Agent 分析完成: {repo_name}")
@@ -176,6 +191,9 @@ class Summarizer:
                         readme_content=readme_content,
                         readme_hash=self._calc_readme_hash(readme_content),
                         source_updated_at=source_updated_at,
+                        keywords=result["keywords"],
+                        tech_stack=result["tech_stack"],
+                        use_cases=result["use_cases"],
                     )
                     logger.info(f"已缓存结果: {repo_name}")
 
@@ -184,14 +202,20 @@ class Summarizer:
                 logger.error(f"Multi-Agent 分析失败: {agent_result.error}")
                 return {
                     "summary": f"分析失败: {agent_result.error}",
-                    "reasons": ["Multi-Agent 分析失败"]
+                    "reasons": ["Multi-Agent 分析失败"],
+                    "keywords": [],
+                    "tech_stack": [],
+                    "use_cases": [],
                 }
 
         except Exception as e:
             logger.error(f"Multi-Agent 分析异常: {e}")
             return {
                 "summary": f"分析失败: {str(e)}",
-                "reasons": ["Multi-Agent 分析异常"]
+                "reasons": ["Multi-Agent 分析异常"],
+                "keywords": [],
+                "tech_stack": [],
+                "use_cases": [],
             }
 
     async def batch_summarize(

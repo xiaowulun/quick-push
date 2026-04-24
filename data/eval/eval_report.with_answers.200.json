@@ -1,0 +1,31 @@
+{
+  "retrieval": {
+    "eval_queries": 200,
+    "baseline_mode": "vector",
+    "recall_at_k_baseline": 0.425,
+    "recall_at_k_candidate": 0.495,
+    "recall_delta": 0.07
+  },
+  "traceability": {
+    "result_level_traceable_rate": 1.0,
+    "traceable_by_chunk_id_rate": 1.0,
+    "traceable_by_path_heading_rate": 1.0,
+    "traceable_results": 607,
+    "total_results": 607
+  },
+  "off_topic_proxy": {
+    "definition": "proxy=1-hit@1（Top1未命中标注视为潜在答非所问）",
+    "baseline": 0.89,
+    "candidate": 0.93,
+    "delta": 0.04
+  },
+  "answer_checks": {
+    "sampled_queries": 5,
+    "citation_presence_rate": 0.6,
+    "citation_valid_rate": 1.0,
+    "citation_total": 3,
+    "keyword_off_topic_baseline": 0.0,
+    "keyword_off_topic_candidate": 0.0,
+    "keyword_off_topic_delta": 0.0
+  }
+}

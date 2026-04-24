@@ -1,0 +1,37 @@
+{
+  "retrieval": {
+    "eval_queries": 20,
+    "baseline_mode": "vector",
+    "candidate_rerank_enabled": true,
+    "recall_at_k_baseline": 0.9,
+    "recall_at_k_candidate": 1.0,
+    "recall_delta": 0.1,
+    "hit_at_1_baseline": 0.7,
+    "hit_at_1_candidate": 1.0,
+    "hit_at_1_delta": 0.3
+  },
+  "traceability": {
+    "result_level_traceable_rate": 1.0,
+    "traceable_by_chunk_id_rate": 1.0,
+    "traceable_by_path_heading_rate": 1.0,
+    "traceable_results": 36,
+    "total_results": 36
+  },
+  "off_topic_proxy": {
+    "definition": "proxy = 1 - hit@1 (Top1 miss implies potential off-topic).",
+    "baseline": 0.3,
+    "candidate": 0.0,
+    "delta": -0.3
+  },
+  "answer_checks": {
+    "sampled_queries": 20,
+    "citation_presence_rate": 1.0,
+    "citation_valid_rate": 1.0,
+    "citation_total": 29,
+    "keyword_off_topic_baseline": 0.0,
+    "keyword_off_topic_candidate": 0.0,
+    "keyword_off_topic_delta": 0.0,
+    "manual_off_topic_sample_size": 20,
+    "manual_off_topic_sample_file": "data\\eval\\manual_off_topic_sample.manual.20.jsonl"
+  }
+}

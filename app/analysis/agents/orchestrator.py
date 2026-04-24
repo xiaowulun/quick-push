@@ -16,6 +16,7 @@ from app.analysis.agents.base import BaseAgent, AgentResult
 from app.analysis.agents.scout import ScoutAgent
 from app.analysis.agents.analyst import AnalystAgent
 from app.analysis.agents.editor import EditorAgent
+from app.analysis.structured_tags import extract_structured_tags
 from app.knowledge.search import SearchService
 
 logger = logging.getLogger(__name__)
@@ -96,20 +97,8 @@ class AgentOrchestrator:
                     scout_result=scout_result,
                     analyst_result=analyst_result,
                 )
-
-                # 自动生成向量并存储
-                if result.success:
-                    asyncio.create_task(self._index_project_async(
-                        repo_name=repo_name,
-                        result=result,
-                        repo_data=repo_data,
-                        category=category,
-                        readme_content=raw_readme_content or readme_content or ""
-                    ))
-
-                return result
             else:
-                return await self._create_fallback_result(
+                result = await self._create_fallback_result(
                     repo_name=repo_name,
                     error=editor_result.error,
                     scout_result=scout_result,
@@ -117,6 +106,27 @@ class AgentOrchestrator:
                     description=description,
                     category=category,
                 )
+
+            if result.success:
+                structured_tags = self._extract_structured_tags_for_result(
+                    result=result,
+                    repo_data=repo_data,
+                    readme_content=raw_readme_content or readme_content or "",
+                    scout_result=scout_result,
+                )
+                self._attach_structured_tags(result, structured_tags)
+
+                # 自动生成向量并存储
+                asyncio.create_task(self._index_project_async(
+                    repo_name=repo_name,
+                    result=result,
+                    repo_data=repo_data,
+                    category=category,
+                    readme_content=raw_readme_content or readme_content or "",
+                    structured_tags=structured_tags,
+                ))
+
+            return result
 
         except Exception as e:
             error_msg = f"Multi-Agent 分析失败: {str(e)}"
@@ -142,6 +152,9 @@ class AgentOrchestrator:
         final_data = {
             "summary": report.get("summary", ""),
             "reasons": report.get("reasons", []),
+            "keywords": [],
+            "tech_stack": [],
+            "use_cases": [],
             "detailed": {
                 "scout": scout_result.data if scout_result.success else None,
                 "analyst": analyst_result.data if analyst_result.success else None,
@@ -188,6 +201,9 @@ class AgentOrchestrator:
                 data={
                     "summary": report_dict.get("summary", ""),
                     "reasons": report_dict.get("reasons", []),
+                    "keywords": [],
+                    "tech_stack": [],
+                    "use_cases": [],
                     "is_fallback": True,
                 },
                 metadata={
@@ -205,19 +221,45 @@ class AgentOrchestrator:
                 agent_name="AgentOrchestrator"
             )
 
+    def _extract_structured_tags_for_result(
+        self,
+        result: AgentResult,
+        repo_data: Dict[str, Any],
+        readme_content: str,
+        scout_result: AgentResult,
+    ) -> Dict[str, List[str]]:
+        return extract_structured_tags(
+            summary=result.data.get("summary", ""),
+            reasons=result.data.get("reasons", []),
+            readme_content=readme_content or "",
+            repo_data=repo_data,
+            scout_data=scout_result.data if scout_result.success else {},
+        )
+
+    def _attach_structured_tags(
+        self,
+        result: AgentResult,
+        structured_tags: Dict[str, List[str]],
+    ) -> None:
+        result.data["keywords"] = structured_tags.get("keywords", [])
+        result.data["tech_stack"] = structured_tags.get("tech_stack", [])
+        result.data["use_cases"] = structured_tags.get("use_cases", [])
+
     async def _index_project_async(
         self,
         repo_name: str,
         result: AgentResult,
         repo_data: Dict[str, Any],
         category: str,
-        readme_content: str = ""
+        readme_content: str = "",
+        structured_tags: Optional[Dict[str, List[str]]] = None,
     ):
         """异步索引项目（生成向量并存储）"""
         try:
             summary = result.data.get("summary", "")
             reasons = result.data.get("reasons", [])
             language = repo_data.get("language", "")
+            tags = structured_tags or {}
 
             success = await self.search_service.index_project(
                 repo_full_name=repo_name,
@@ -225,7 +267,10 @@ class AgentOrchestrator:
                 reasons=reasons,
                 readme_content=readme_content,
                 language=language,
-                category=category
+                category=category,
+                keywords=tags.get("keywords", []),
+                tech_stack=tags.get("tech_stack", []),
+                use_cases=tags.get("use_cases", []),
             )
 
             if success:

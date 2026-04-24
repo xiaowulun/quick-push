@@ -8,13 +8,22 @@
 import logging
 import hashlib
 import re
+import asyncio
+import threading
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from time import perf_counter
+from typing import Any, Dict, List, Optional, Tuple, Literal
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 from app.analysis.readme import clean_readme_for_retrieval, split_readme_sections_for_retrieval
+from app.analysis.structured_tags import extract_structured_tags
 from app.infrastructure.cache import AnalysisCache
 from app.infrastructure.chroma_store import ChromaVectorStore
+from app.infrastructure.config import get_config
 from app.infrastructure.embedding import EmbeddingEngine
 from app.infrastructure.hybrid_search import HybridSearchEngine
 from app.infrastructure.reranker import CrossEncoderReranker
@@ -23,31 +32,413 @@ from app.knowledge.query_rewriter import QueryRewriter, QueryVariant
 logger = logging.getLogger(__name__)
 
 
+class LLMProjectProfile(BaseModel):
+    suitable_for: List[str] = Field(default_factory=list, description="适合人群或场景建议，2-4条")
+    complexity: Literal["low", "medium", "high"] = "medium"
+    maturity: Literal["early", "medium", "high"] = "medium"
+    risk_notes: List[str] = Field(default_factory=list, description="主要风险提示，1-4条")
+
+
+_PROFILE_PROMPT = ChatPromptTemplate.from_template(
+    """你是开源项目选型顾问。请基于输入事实，输出 JSON 字段：
+- suitable_for: 2-4条，面向团队场景，中文短句
+- complexity: 只能是 low/medium/high
+- maturity: 只能是 early/medium/high
+- risk_notes: 1-4条，具体风险，中文短句
+
+要求：
+1) 只能基于提供事实，不要虚构。
+2) 不要输出与事实冲突的结论。
+3) 避免空泛套话。
+
+项目：{repo_full_name}
+语言：{language}
+分类：{category}
+summary：{summary}
+reasons：{reasons}
+keywords：{keywords}
+tech_stack：{tech_stack}
+use_cases：{use_cases}
+trend_summary：{trend_summary}
+evidence：{evidence}
+"""
+)
+
+
+_PROFILE_LLM: Optional[ChatOpenAI] = None
+_PROFILE_LLM_SIGNATURE: Optional[Tuple[str, str, float]] = None
+
+
+def _sanitize_profile_list(values: Any, limit: int) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    if not isinstance(values, list):
+        return out
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _get_profile_llm() -> Optional[ChatOpenAI]:
+    global _PROFILE_LLM, _PROFILE_LLM_SIGNATURE
+    try:
+        config = get_config()
+    except Exception as exc:
+        logger.warning("项目画像 LLM 不可用（配置不可用），将使用规则版: %s", exc)
+        return None
+
+    if not config.openai.api_key:
+        return None
+
+    model_name = config.openai.model_fast
+    timeout = float(config.openai.request_timeout)
+    signature = (config.openai.base_url, model_name, timeout)
+    if _PROFILE_LLM is not None and _PROFILE_LLM_SIGNATURE == signature:
+        return _PROFILE_LLM
+
+    _PROFILE_LLM = ChatOpenAI(
+        api_key=config.openai.api_key,
+        base_url=config.openai.base_url,
+        model_name=model_name,
+        temperature=0.1,
+        timeout=timeout,
+    )
+    _PROFILE_LLM_SIGNATURE = signature
+    return _PROFILE_LLM
+
+
+def _derive_profile_with_llm(
+    *,
+    summary: str,
+    reasons: List[str],
+    keywords: List[str],
+    tech_stack: List[str],
+    use_cases: List[str],
+    trend_summary: Dict[str, Any],
+    basic: Dict[str, Any],
+    evidence_text: str,
+) -> Optional[Dict[str, Any]]:
+    llm = _get_profile_llm()
+    if llm is None:
+        return None
+
+    try:
+        chain = _PROFILE_PROMPT | llm.with_structured_output(LLMProjectProfile)
+        result = chain.invoke(
+            {
+                "repo_full_name": basic.get("repo_full_name") or "",
+                "language": basic.get("language") or "Unknown",
+                "category": basic.get("category") or "infra_and_tools",
+                "summary": summary or "",
+                "reasons": " | ".join([str(x) for x in reasons or []])[:800],
+                "keywords": " | ".join([str(x) for x in keywords or []])[:500],
+                "tech_stack": " | ".join([str(x) for x in tech_stack or []])[:500],
+                "use_cases": " | ".join([str(x) for x in use_cases or []])[:500],
+                "trend_summary": str(trend_summary or {})[:700],
+                "evidence": (evidence_text or "")[:1200],
+            }
+        )
+        payload = result.model_dump() if hasattr(result, "model_dump") else dict(result or {})
+        payload["suitable_for"] = _sanitize_profile_list(payload.get("suitable_for"), 4)
+        payload["risk_notes"] = _sanitize_profile_list(payload.get("risk_notes"), 6)
+        return payload
+    except Exception as exc:
+        logger.warning("项目画像 LLM 生成失败，回退规则版: %s", exc)
+        return None
+
+
+def _derive_project_profile_rule(
+    *,
+    summary: str,
+    reasons: List[str],
+    keywords: List[str],
+    tech_stack: List[str],
+    use_cases: List[str],
+    trend_summary: Dict[str, Any],
+    basic: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Rule-based project profile derivation."""
+    use_case_to_audience = {
+        "AI Agent": "适合需要构建智能体应用的团队",
+        "RAG Knowledge Base": "适合需要知识库问答与检索增强的团队",
+        "Code Assistant": "适合构建开发者工具或代码助手的团队",
+        "Data Crawling": "适合做数据采集与情报抓取的团队",
+        "Data Visualization": "适合做可视化报表与运营看板的团队",
+        "Web Application": "适合交付 Web 产品与 SaaS 原型的团队",
+        "Workflow Automation": "适合流程自动化和工作流编排场景",
+        "Model Serving": "适合模型推理服务与部署场景",
+        "DevOps": "适合基础设施与持续交付改造场景",
+        "Education": "适合教学演示与课程实验场景",
+    }
+
+    advanced_stacks = {"Kubernetes", "Docker", "PyTorch", "TensorFlow", "LangChain"}
+    complexity_score = 0.0
+    complexity_score += min(2.0, max(0.0, (len(tech_stack) - 2) * 0.35))
+    complexity_score += sum(0.6 for stack in tech_stack if stack in advanced_stacks)
+    if "Model Serving" in use_cases:
+        complexity_score += 0.8
+    if "Workflow Automation" in use_cases:
+        complexity_score += 0.4
+
+    if complexity_score >= 2.8:
+        complexity = "high"
+    elif complexity_score >= 1.2:
+        complexity = "medium"
+    else:
+        complexity = "low"
+
+    stars = int(basic.get("stars") or 0)
+    total_appearances = int(basic.get("total_appearances") or 0)
+    total_records = int(trend_summary.get("total_records") or 0)
+    best_rank = trend_summary.get("best_rank")
+    maturity_score = 0.0
+    if stars >= 5000:
+        maturity_score += 2.0
+    elif stars >= 1000:
+        maturity_score += 1.2
+    elif stars >= 300:
+        maturity_score += 0.6
+
+    if total_appearances >= 10:
+        maturity_score += 1.0
+    elif total_appearances >= 3:
+        maturity_score += 0.5
+
+    if total_records >= 10:
+        maturity_score += 0.8
+    elif total_records >= 4:
+        maturity_score += 0.4
+
+    if isinstance(best_rank, int) and best_rank > 0:
+        if best_rank <= 3:
+            maturity_score += 0.7
+        elif best_rank <= 10:
+            maturity_score += 0.4
+
+    if maturity_score >= 3.0:
+        maturity = "high"
+    elif maturity_score >= 1.5:
+        maturity = "medium"
+    else:
+        maturity = "early"
+
+    suitable_for: List[str] = []
+    for use_case in use_cases:
+        audience = use_case_to_audience.get(str(use_case).strip())
+        if audience and audience not in suitable_for:
+            suitable_for.append(audience)
+        if len(suitable_for) >= 4:
+            break
+
+    if not suitable_for:
+        category = str(basic.get("category") or "").strip()
+        language = str(basic.get("language") or "Unknown").strip()
+        suitable_for.append(f"适合在 {language} 技术栈中做 PoC 与技术验证")
+        if category:
+            suitable_for.append(f"适合关注 {category} 方向开源方案的团队")
+
+    risk_notes: List[str] = []
+    if not summary.strip():
+        risk_notes.append("项目摘要信息较少，建议补充 README 细读。")
+    if len(reasons) < 2:
+        risk_notes.append("推荐理由偏少，建议结合源码与 issue 进一步验证。")
+    if len(tech_stack) == 0:
+        risk_notes.append("技术栈识别不足，可能影响接入成本评估。")
+    if total_records < 3:
+        risk_notes.append("趋势历史样本较少，近期热度判断可能不稳定。")
+    if complexity == "high":
+        risk_notes.append("技术栈复杂度较高，落地前建议先做小范围验证。")
+    if maturity == "early":
+        risk_notes.append("项目成熟度偏早期，生产使用需额外风控。")
+    if not risk_notes:
+        risk_notes.append("未发现显著风险，仍建议结合实际场景完成 PoC 验证。")
+
+    return {
+        "suitable_for": suitable_for[:4],
+        "complexity": complexity,
+        "maturity": maturity,
+        "risk_notes": risk_notes[:6],
+        "keyword_hints": keywords[:6],
+    }
+
+
+def derive_project_profile(
+    *,
+    summary: str,
+    reasons: List[str],
+    keywords: List[str],
+    tech_stack: List[str],
+    use_cases: List[str],
+    trend_summary: Dict[str, Any],
+    basic: Dict[str, Any],
+    evidence_text: str = "",
+) -> Dict[str, Any]:
+    """Infer project profile, with optional LLM enhancement and deterministic fallback."""
+    rule_profile = _derive_project_profile_rule(
+        summary=summary,
+        reasons=reasons,
+        keywords=keywords,
+        tech_stack=tech_stack,
+        use_cases=use_cases,
+        trend_summary=trend_summary,
+        basic=basic,
+    )
+
+    llm_profile = _derive_profile_with_llm(
+        summary=summary,
+        reasons=reasons,
+        keywords=keywords,
+        tech_stack=tech_stack,
+        use_cases=use_cases,
+        trend_summary=trend_summary,
+        basic=basic,
+        evidence_text=evidence_text,
+    )
+    if not llm_profile:
+        return rule_profile
+
+    merged = dict(rule_profile)
+    complexity = str(llm_profile.get("complexity") or "").strip().lower()
+    maturity = str(llm_profile.get("maturity") or "").strip().lower()
+    if complexity in {"low", "medium", "high"}:
+        merged["complexity"] = complexity
+    if maturity in {"early", "medium", "high"}:
+        merged["maturity"] = maturity
+
+    suitable_for = _sanitize_profile_list(llm_profile.get("suitable_for"), 4)
+    risk_notes = _sanitize_profile_list(llm_profile.get("risk_notes"), 6)
+    if suitable_for:
+        merged["suitable_for"] = suitable_for
+    if risk_notes:
+        merged["risk_notes"] = risk_notes
+    return merged
+
+
 class SearchService:
     """搜索服务：chunk 召回 -> chunk 重排 -> repo 聚合。"""
 
     def __init__(self):
+        self.config = get_config()
         self.cache = AnalysisCache()
         self.embedding_engine = EmbeddingEngine()
         self.chroma_store = ChromaVectorStore()
         self.hybrid_engine = HybridSearchEngine(rrf_k=60)
-        self.reranker = CrossEncoderReranker(model_name="BAAI/bge-reranker-base")
+        retrieval = self.config.retrieval
+        self.rerank_enabled = bool(retrieval.rerank_enabled)
+        self.rerank_model_name = retrieval.rerank_model_name
+        self.max_variants = max(1, int(retrieval.search_max_variants))
+        self.coarse_multiplier = max(3, int(retrieval.search_coarse_multiplier))
+        self.fused_multiplier = max(4, int(retrieval.search_fused_multiplier))
+        self.variant_parallel = bool(retrieval.search_parallel_variants)
+        # 缩小默认重排池，降低首包延迟。
+        self.rerank_top_k_cap = max(6, int(retrieval.rerank_top_k_cap))
+        self.rerank_multiplier = max(2, int(retrieval.rerank_multiplier))
+        self.rerank_min_pool = max(4, int(retrieval.rerank_min_pool))
+        self.reranker = (
+            CrossEncoderReranker(
+                model_name=self.rerank_model_name,
+                enabled=self.rerank_enabled,
+                local_files_only=bool(retrieval.rerank_local_files_only),
+                max_length=int(retrieval.rerank_max_length),
+                batch_size=int(retrieval.rerank_batch_size),
+            )
+            if self.rerank_enabled
+            else None
+        )
+        self._rerank_warmup_started = False
+        self._rerank_warmup_done = False
+        self._rerank_warmup_lock = threading.Lock()
+        self._index_warmup_started = False
+        self._index_warmup_done = False
+        self._index_warmup_lock = threading.Lock()
+        self._ensure_index_lock = threading.Lock()
         self.query_rewriter = QueryRewriter()
         self._initialized = False
+        if self.rerank_enabled and bool(retrieval.rerank_warmup_on_start):
+            self.start_reranker_warmup()
+
+    def start_reranker_warmup(self) -> None:
+        """Start reranker warmup in a daemon thread (non-blocking)."""
+        if not self.reranker:
+            return
+        with self._rerank_warmup_lock:
+            if self._rerank_warmup_started:
+                return
+            self._rerank_warmup_started = True
+
+        def _runner():
+            started = perf_counter()
+            ok = False
+            try:
+                ok = self.reranker.warmup()
+            except Exception as e:
+                logger.warning("Reranker warmup crashed: %s", e)
+            finally:
+                self._rerank_warmup_done = ok
+                elapsed_ms = int((perf_counter() - started) * 1000)
+                logger.info(
+                    "Reranker warmup finished ok=%s elapsed_ms=%s",
+                    ok,
+                    elapsed_ms,
+                )
+
+        thread = threading.Thread(target=_runner, name="reranker-warmup", daemon=True)
+        thread.start()
+
+    def start_index_warmup(self) -> None:
+        """Build retrieval index in a daemon thread (non-blocking)."""
+        with self._index_warmup_lock:
+            if self._index_warmup_started:
+                return
+            self._index_warmup_started = True
+
+        def _runner():
+            started = perf_counter()
+            ok = False
+            try:
+                self._ensure_index()
+                ok = bool(self._initialized)
+            except Exception as e:
+                logger.warning("Index warmup crashed: %s", e)
+            finally:
+                self._index_warmup_done = ok
+                elapsed_ms = int((perf_counter() - started) * 1000)
+                logger.info(
+                    "Index warmup finished ok=%s elapsed_ms=%s initialized=%s",
+                    ok,
+                    elapsed_ms,
+                    self._initialized,
+                )
+
+        thread = threading.Thread(target=_runner, name="search-index-warmup", daemon=True)
+        thread.start()
 
     def _ensure_index(self) -> None:
         """确保检索索引已构建。"""
         if self._initialized:
             return
 
-        all_chunks = self.cache.get_all_chunks()
-        if not all_chunks:
-            all_chunks = self._build_legacy_chunks()
+        with self._ensure_index_lock:
+            if self._initialized:
+                return
 
-        if all_chunks:
-            self.hybrid_engine.build_index(all_chunks)
-            self._initialized = True
-            logger.info(f"搜索索引初始化完成，共 {len(all_chunks)} 个 chunk")
+            all_chunks = self.cache.get_all_chunks()
+            if not all_chunks:
+                all_chunks = self._build_legacy_chunks()
+
+            if all_chunks:
+                self.hybrid_engine.build_index(all_chunks)
+                self._initialized = True
+                logger.info(f"搜索索引初始化完成，共 {len(all_chunks)} 个 chunk")
 
     def _build_legacy_chunks(self) -> List[Dict]:
         """兼容旧数据：从 repo 级 embedding 构造单 chunk 文档。"""
@@ -99,6 +490,17 @@ class SearchService:
             keywords = keywords or []
             tech_stack = tech_stack or []
             use_cases = use_cases or []
+            if not keywords and not tech_stack and not use_cases:
+                auto_tags = extract_structured_tags(
+                    summary=summary,
+                    reasons=reasons or [],
+                    readme_content=readme_content or "",
+                    repo_data={"language": language, "topics": []},
+                    scout_data={},
+                )
+                keywords = auto_tags.get("keywords", [])
+                tech_stack = auto_tags.get("tech_stack", [])
+                use_cases = auto_tags.get("use_cases", [])
 
             search_text = self.cache.build_search_text(
                 repo_full_name=repo_full_name,
@@ -362,31 +764,54 @@ class SearchService:
                 logger.warning("索引未初始化")
                 return []
 
-            coarse_k = max(coarse_top_k, final_top_k * 6)
-            variants = self.query_rewriter.rewrite(query, max_variants=3)
+            coarse_k = max(coarse_top_k, final_top_k * self.coarse_multiplier)
+            variants = self.query_rewriter.rewrite(query, max_variants=self.max_variants)
             variant_results = []
-            for variant in variants:
-                coarse_results = await self.hybrid_engine.search(query=variant.text, top_k=coarse_k)
-                filtered_results = self._apply_filters(coarse_results, filters)
-                if filtered_results:
-                    variant_results.append((variant, filtered_results))
+            if self.variant_parallel and len(variants) > 1:
+                search_tasks = [
+                    self.hybrid_engine.search(query=variant.text, top_k=coarse_k)
+                    for variant in variants
+                ]
+                task_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+                for variant, coarse_results in zip(variants, task_results):
+                    if isinstance(coarse_results, Exception):
+                        logger.warning("变体检索失败 query=%s reason=%s", variant.reason, coarse_results)
+                        continue
+                    filtered_results = self._apply_filters(coarse_results, filters)
+                    if filtered_results:
+                        variant_results.append((variant, filtered_results))
+            else:
+                for variant in variants:
+                    coarse_results = await self.hybrid_engine.search(query=variant.text, top_k=coarse_k)
+                    filtered_results = self._apply_filters(coarse_results, filters)
+                    if filtered_results:
+                        variant_results.append((variant, filtered_results))
 
             if not variant_results:
                 return []
 
             fused_results = self._fuse_multi_query_results(
                 variant_results=variant_results,
-                top_k=max(coarse_top_k * 2, final_top_k * 12),
+                top_k=max(coarse_top_k * 2, final_top_k * self.fused_multiplier),
             )
             if not fused_results:
                 return []
 
-            rerank_k = min(len(fused_results), max(final_top_k * 10, 30))
-            reranked_chunks = await self.reranker.rerank(
-                query=query,
-                results=fused_results,
-                top_k=rerank_k,
-            )
+            if self.rerank_enabled and self.reranker:
+                rerank_pool = min(
+                    len(fused_results),
+                    min(max(final_top_k * self.rerank_multiplier, self.rerank_min_pool), self.rerank_top_k_cap),
+                )
+                candidate_pool = fused_results[:rerank_pool]
+                reranked_chunks = await self.reranker.rerank(
+                    query=query,
+                    results=candidate_pool,
+                    top_k=rerank_pool,
+                )
+            else:
+                logger.info("Rerank 已关闭，直接使用融合结果")
+                coarse_pick = max(final_top_k * 2, self.rerank_min_pool)
+                reranked_chunks = fused_results[: min(len(fused_results), coarse_pick)]
 
             repo_results = self._aggregate_chunks_to_repos(
                 chunk_results=reranked_chunks,
@@ -513,9 +938,13 @@ class SearchService:
                 "keywords": merged_keywords[:12],
                 "tech_stack": merged_tech_stack[:12],
                 "use_cases": merged_use_cases[:12],
+                "chunk_id": primary.get("chunk_id"),
                 "evidence_chunk": primary.get("chunk_text", ""),
                 "evidence_section": primary.get("section"),
-                "path": primary.get("path"),
+                "path": (
+                    primary.get("path")
+                    or ("README.md" if str(primary.get("section") or "").startswith("readme:") else "SUMMARY")
+                ),
                 "heading": primary.get("heading") or primary.get("section"),
                 "updated_at": primary.get("updated_at"),
             })
@@ -677,6 +1106,17 @@ class SearchService:
                     stats["skipped"] += 1
                     continue
 
+                auto_tags = extract_structured_tags(
+                    summary=analysis.get("summary", ""),
+                    reasons=analysis.get("reasons", []),
+                    readme_content=analysis.get("readme_content", ""),
+                    repo_data={"language": record.get("language", ""), "topics": []},
+                    scout_data={},
+                )
+                keywords = analysis.get("keywords", []) or auto_tags.get("keywords", [])
+                tech_stack = analysis.get("tech_stack", []) or auto_tags.get("tech_stack", [])
+                use_cases = analysis.get("use_cases", []) or auto_tags.get("use_cases", [])
+
                 success = await self.index_project(
                     repo_full_name=repo_name,
                     summary=analysis.get("summary", ""),
@@ -685,6 +1125,9 @@ class SearchService:
                     language=record.get("language", ""),
                     category=record.get("category", ""),
                     source_updated_at=record.get("repo_updated_at"),
+                    keywords=keywords,
+                    tech_stack=tech_stack,
+                    use_cases=use_cases,
                 )
 
                 if success:

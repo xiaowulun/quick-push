@@ -1,0 +1,3 @@
+{"query": "readme:README hkuds deeptutor python", "gold_chunk_ids": ["HKUDS/DeepTutor#000"], "gold_repo_names": ["HKUDS/DeepTutor"], "expected_keywords": ["hkuds", "deeptutor", "python"]}
+{"query": "readme:DeepTutor: Agent-Native Personalized Tutoring deeptutor agent-native personalized", "gold_chunk_ids": ["HKUDS/DeepTutor#001"], "gold_repo_names": ["HKUDS/DeepTutor"], "expected_keywords": ["deeptutor", "agent-native", "personalized"]}
+{"query": "readme:📦 Releases releases hkuds deeptutor", "gold_chunk_ids": ["HKUDS/DeepTutor#002"], "gold_repo_names": ["HKUDS/DeepTutor"], "expected_keywords": ["releases", "hkuds", "deeptutor"]}

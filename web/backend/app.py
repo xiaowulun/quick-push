@@ -1,5 +1,6 @@
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from time import perf_counter
 
@@ -11,10 +12,19 @@ from fastapi.staticfiles import StaticFiles
 from app.infrastructure.logging import get_logger, reset_request_id, set_request_id
 from .routers import api
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Initialize chat/search services early so reranker/index warmup starts before first user request.
+    api.warmup_runtime_services()
+    yield
+
+
 app = FastAPI(
     title="QuickPush API",
     description="GitHub Trending 智能分析工具 API",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 logger = get_logger(__name__)
 

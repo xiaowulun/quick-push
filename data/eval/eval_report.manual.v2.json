@@ -1,0 +1,93 @@
+{
+  "retrieval": {
+    "eval_queries": 102,
+    "baseline_mode": "vector",
+    "candidate_rerank_enabled": true,
+    "recall_at_k_baseline": 0.764706,
+    "recall_at_k_candidate": 0.960784,
+    "recall_delta": 0.196078,
+    "hit_at_1_baseline": 0.578431,
+    "hit_at_1_candidate": 0.892157,
+    "hit_at_1_delta": 0.313725,
+    "rerank_total_calls": 102,
+    "rerank_effective_calls": 102,
+    "rerank_effective_rate": 1.0,
+    "rerank_reason_distribution": {
+      "applied": 102
+    }
+  },
+  "retrieval_by_query_type": {
+    "direct": {
+      "count": 17,
+      "recall_at_k_baseline": 0.941176,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.058824,
+      "hit_at_1_baseline": 0.705882,
+      "hit_at_1_candidate": 0.882353,
+      "hit_at_1_delta": 0.176471
+    },
+    "paraphrase": {
+      "count": 17,
+      "recall_at_k_baseline": 0.941176,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.058824,
+      "hit_at_1_baseline": 0.764706,
+      "hit_at_1_candidate": 1.0,
+      "hit_at_1_delta": 0.235294
+    },
+    "scenario": {
+      "count": 17,
+      "recall_at_k_baseline": 0.882353,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.117647,
+      "hit_at_1_baseline": 0.705882,
+      "hit_at_1_candidate": 0.882353,
+      "hit_at_1_delta": 0.176471
+    },
+    "constraint": {
+      "count": 17,
+      "recall_at_k_baseline": 0.705882,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.294118,
+      "hit_at_1_baseline": 0.588235,
+      "hit_at_1_candidate": 1.0,
+      "hit_at_1_delta": 0.411765
+    },
+    "hard_negative": {
+      "count": 17,
+      "recall_at_k_baseline": 0.176471,
+      "recall_at_k_candidate": 0.764706,
+      "recall_delta": 0.588235,
+      "hit_at_1_baseline": 0.0,
+      "hit_at_1_candidate": 0.647059,
+      "hit_at_1_delta": 0.647059
+    },
+    "ambiguous": {
+      "count": 17,
+      "recall_at_k_baseline": 0.941176,
+      "recall_at_k_candidate": 1.0,
+      "recall_delta": 0.058824,
+      "hit_at_1_baseline": 0.705882,
+      "hit_at_1_candidate": 0.941176,
+      "hit_at_1_delta": 0.235294
+    }
+  },
+  "hard_negative_confusion": {
+    "query_count": 17,
+    "top1_confused_as_hard_negative_baseline": 1.0,
+    "top1_confused_as_hard_negative_candidate": 0.294118
+  },
+  "traceability": {
+    "result_level_traceable_rate": 1.0,
+    "traceable_by_chunk_id_rate": 1.0,
+    "traceable_by_path_heading_rate": 1.0,
+    "traceable_results": 227,
+    "total_results": 227
+  },
+  "off_topic_proxy": {
+    "definition": "proxy = 1 - hit@1 (Top1 miss implies potential off-topic).",
+    "baseline": 0.421569,
+    "candidate": 0.107843,
+    "delta": -0.313725
+  }
+}

@@ -1,9 +1,13 @@
-# QuickPush 🚀
+# OpenScout 🚀
 
-> 追踪 GitHub Trending，用更少时间看懂项目，用对话方式快速找到真正值得关注的开源仓库。
+> 从 GitHub 热榜中，找到真正值得投入时间的项目。
 
-QuickPush 是一个面向开发者的实用工具箱。
-它把零散的 Trending 信息，整理成可以直接拿来决策的洞察：
+OpenScout 是一个面向开发者的开源项目发现与决策助手。
+它不是单纯的 GitHub Trending 可视化页面，也不是单纯的 RAG Demo，而是一个把开源发现、项目理解、检索问答和决策支持串起来的 AI-native 工具。
+
+它把零散的 GitHub Trending 信息，整理成可搜索、可理解、可问答的项目洞察，帮助你更快完成技术筛选、趋势跟踪和项目探索。
+
+你可以用它来：
 
 - 抓取 GitHub Trending（daily / weekly / monthly）
 - 生成 AI 摘要与推荐理由
@@ -13,18 +17,33 @@ QuickPush 是一个面向开发者的实用工具箱。
 
 ***
 
+## 适合谁使用 👥
+
+- 独立开发者
+- AI 应用开发者
+- 持续关注技术趋势的工程师
+- 正在做技术选型、原型验证或 side project 的开发者
+
+***
+
 ## 这个项目解决了什么问题 ❓
 
-大家都知道 Trending 有价值，但也有一个现实问题：
-信息很多、噪音也很多，真正适合自己的项目并不好找。
+GitHub Trending 很有价值，但也有一个现实问题：
+信息很多、噪音也很多，真正值得深入看、值得投入时间的项目并不好找。
 
-QuickPush 的目标是把“刷榜”变成“有依据的筛选”：
+OpenScout 想解决的，不是“怎么把热榜展示出来”，而是“怎么把刷榜变成有依据的筛选和判断”：
 
 - 这个项目适合拿来做什么
 - 为什么它值得关注
 - 它和你当前需求的匹配度如何
 
-如果你在做技术选型、搭建 side project、或持续跟踪 AI/开发工具趋势，这个项目会很有帮助。
+如果你在做技术选型、搭建 side project、评估开源方案，或者持续跟踪 AI / 开发工具趋势，OpenScout 会是一个更高效的入口。
+
+换句话说，OpenScout 想做的是：
+
+- 帮你发现值得关注的开源项目
+- 帮你理解项目背后的价值与适用场景
+- 帮你基于搜索、推荐和问答更快做出技术判断
 
 ***
 
@@ -34,7 +53,7 @@ QuickPush 的目标是把“刷榜”变成“有依据的筛选”：
 - AI 分析（摘要 + 推荐理由）
 - 分块检索链路（chunk 召回 -> 重排 -> repo 聚合）
 - 去重与多样性控制（避免结果被单一仓库“刷屏”）
-- 聊天 API（普通模式 + SSE 流式）
+- 聊天 API（仅 SSE 流式）
 - Dashboard / Trends / Search API
 - Vue 前端可视化
 - 可选飞书通知
@@ -144,7 +163,6 @@ npm run dev
 - `GET /api/search`：项目搜索
 - `POST /api/search/index`：重建检索索引
 - `GET /api/search/stats`：检索统计
-- `POST /api/chat`：非流式对话
 - `POST /api/chat/stream`：流式对话（SSE）
 - `GET /api/github/validate`：验证 GitHub Token
 - `GET /api/github/rate-limit`：查看 GitHub API 配额
@@ -174,12 +192,30 @@ python -m pytest
 python scripts/manual_confidence_check.py
 ```
 
+RAG 离线评估（增强手工评测集，建议在 `llm` 环境执行）：
+
+```bash
+conda run -n llm python scripts/eval_rag_quality.py \
+  --eval-set data/eval/manual_eval_set.v2.jsonl \
+  --top-k 10 \
+  --baseline vector \
+  --check-answers \
+  --max-answer-queries 60 \
+  --manual-off-topic-sample 60 \
+  --manual-off-topic-output data/eval/manual_off_topic_sample.v2.60.jsonl \
+  --output data/eval/eval_report.manual.v2.json
+```
+
+- 增强手工评测集：`data/eval/manual_eval_set.v2.jsonl`（102 条，含 `query_type` 与 hard negative）
+- 可加 `--max-eval-queries 60` 做快速迭代评测
+- 人工标注说明：`docs/eval/manual_quality_workflow.md`
+- 回归门禁脚本：`scripts/check_eval_regression.py`（或 `scripts/run_eval_gate.ps1`）
+
 ***
 
 ## 数据目录说明 💾
 
 - 当前默认数据目录为 `data/sqlite` 与 `data/chroma`。
-- 历史目录 `.cache` 与 `.chroma_db` 已废弃。
 - `AnalysisCache` 仍保留从 `.cache/analysis_cache.db` 到 `data/sqlite/analysis_cache.db` 的一次性兼容迁移逻辑（如存在旧库）。
 
 ***

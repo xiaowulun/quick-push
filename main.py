@@ -40,16 +40,14 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
             "repo_name": repo.full_name,
             "description": repo.description,
             "readme_content": repo.readme,
-            "repo_data": {
-                "stars": repo.stars,
-                "language": repo.language,
-                "description": repo.description,
-                "topics": repo.topics if repo.topics else [],
-                "has_pages": repo.has_pages,
-                "license": repo.license_key,
-                "pushed_at": repo.pushed_at,
+                "repo_data": {
+                    "stars": repo.stars,
+                    "language": repo.language,
+                    "description": repo.description,
+                    "topics": repo.topics if repo.topics else [],
+                    "pushed_at": repo.pushed_at,
+                }
             }
-        }
         for repo in repos
     ]
     summarize_started = perf_counter()

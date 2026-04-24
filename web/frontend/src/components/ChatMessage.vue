@@ -5,20 +5,28 @@
     </div>
     <div class="chat-bubble">
       <div class="chat-content" v-html="formattedContent"></div>
-      
+
       <div v-if="projects && projects.length > 0" class="chat-referenced-projects">
-        <div class="chat-referenced-projects-title">📚 参考项目</div>
-        <div 
-          v-for="project in projects" 
+        <div class="chat-referenced-projects-title">参考项目</div>
+        <div
+          v-for="project in projects"
           :key="project.repo_full_name"
           class="chat-project-card"
+          role="button"
+          tabindex="0"
+          @click="goToDetail(project.repo_full_name)"
+          @keydown.enter.prevent="goToDetail(project.repo_full_name)"
+          @keydown.space.prevent="goToDetail(project.repo_full_name)"
         >
           <div class="chat-project-card-header">
-            <a :href="project.url" target="_blank" class="chat-project-card-name">
+            <button class="chat-project-card-name" @click.stop="goToDetail(project.repo_full_name)">
               {{ project.repo_full_name }}
-            </a>
+            </button>
             <span class="chat-project-card-similarity">{{ project.similarity }}% 相关</span>
           </div>
+          <a :href="project.url" target="_blank" rel="noopener" class="chat-project-card-link" @click.stop>
+            GitHub
+          </a>
           <div class="chat-project-card-summary">{{ project.summary }}</div>
         </div>
       </div>
@@ -28,7 +36,10 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { marked } from 'marked'
+
+const router = useRouter()
 
 const props = defineProps({
   role: {
@@ -47,8 +58,17 @@ const props = defineProps({
 
 const formattedContent = computed(() => {
   if (!props.content) return ''
-  return marked.parse(props.content)
+  const normalized = props.content.replace(/^\s+/, '')
+  return marked.parse(normalized)
 })
+
+function goToDetail(repoFullName) {
+  if (!repoFullName) return
+  router.push({
+    name: 'ProjectDetail',
+    params: { repoFullName }
+  })
+}
 </script>
 
 <style scoped>
@@ -145,6 +165,26 @@ const formattedContent = computed(() => {
   margin: 10px 0;
 }
 
+.chat-content :deep(h1),
+.chat-content :deep(h2),
+.chat-content :deep(h3),
+.chat-content :deep(h4),
+.chat-content :deep(h5),
+.chat-content :deep(h6) {
+  margin: 8px 0;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.chat-content :deep(*:first-child) {
+  margin-top: 0;
+}
+
+.chat-content :deep(*:last-child) {
+  margin-bottom: 0;
+}
+
 .chat-referenced-projects {
   margin-top: 16px;
   padding-top: 16px;
@@ -173,11 +213,17 @@ const formattedContent = computed(() => {
   transform: translateX(4px);
 }
 
+.chat-project-card:focus-visible {
+  outline: 2px solid rgba(123, 104, 238, 0.45);
+  outline-offset: 2px;
+}
+
 .chat-project-card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 6px;
+  gap: 8px;
 }
 
 .chat-project-card-name {
@@ -185,6 +231,11 @@ const formattedContent = computed(() => {
   color: var(--text-primary);
   text-decoration: none;
   transition: color 0.2s;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
 }
 
 .chat-project-card-name:hover {
@@ -197,11 +248,30 @@ const formattedContent = computed(() => {
   background: rgba(123, 104, 238, 0.1);
   padding: 3px 10px;
   border-radius: 20px;
+  white-space: nowrap;
+}
+
+.chat-project-card-link {
+  display: inline-block;
+  font-size: 12px;
+  color: #7dc3ff;
+  text-decoration: none;
+  margin-bottom: 6px;
+}
+
+.chat-project-card-link:hover {
+  text-decoration: underline;
 }
 
 .chat-project-card-summary {
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.5;
+}
+
+@media (max-width: 768px) {
+  .chat-bubble {
+    max-width: 100%;
+  }
 }
 </style>

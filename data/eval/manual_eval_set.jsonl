@@ -1,0 +1,20 @@
+﻿{"query":"想找一个让 AI Agent 可以持续自我进化的框架，最好有类似基因进化协议的设计。","gold_chunk_ids":[],"gold_repo_names":["EvoMap/evolver"],"expected_keywords":["agent","进化","gep"]}
+{"query":"有没有强调智能体自我迭代和长期适应能力的开源方案？","gold_chunk_ids":[],"gold_repo_names":["EvoMap/evolver"],"expected_keywords":["智能体","进化","evolver"]}
+{"query":"我想搭一个个性化 AI 家教，需要多智能体协作和持久化记忆，推荐哪个项目？","gold_chunk_ids":[],"gold_repo_names":["HKUDS/DeepTutor"],"expected_keywords":["deeptutor","个性化","学习"]}
+{"query":"有没有能本地部署、强调隐私的 AI 学习辅导项目？","gold_chunk_ids":[],"gold_repo_names":["HKUDS/DeepTutor"],"expected_keywords":["deeptutor","本地部署","辅导"]}
+{"query":"我在找一个有长期记忆和技能学习机制的 AI 助手框架，支持多模型更好。","gold_chunk_ids":[],"gold_repo_names":["NousResearch/hermes-agent"],"expected_keywords":["hermes-agent","长期记忆","技能"]}
+{"query":"有没有无 tokenizer、直接建模音频波形的语音生成项目？","gold_chunk_ids":[],"gold_repo_names":["OpenBMB/VoxCPM"],"expected_keywords":["voxcpm","语音","波形"]}
+{"query":"想给海外华人家庭找 K12 到 K16 的中文教材资源库，有推荐的开源仓库吗？","gold_chunk_ids":[],"gold_repo_names":["TapXWorld/ChinaTextbook"],"expected_keywords":["chinatextbook","教材","k16"]}
+{"query":"有没有面向长尾 SEO 博客生产的 AI Agent 工作流项目？","gold_chunk_ids":[],"gold_repo_names":["TheCraigHewitt/seomachine"],"expected_keywords":["seomachine","seo","博客"]}
+{"query":"想用 slash command 规范 AI 编码流程，比如 /spec /plan 这类技能库。","gold_chunk_ids":[],"gold_repo_names":["addyosmani/agent-skills"],"expected_keywords":["agent-skills","spec","plan"]}
+{"query":"有没有把 AI 编码步骤写成 YAML、可以重复执行和审查的编排工具？","gold_chunk_ids":[],"gold_repo_names":["coleam00/Archon"],"expected_keywords":["archon","yaml","编排"]}
+{"query":"我想约束 Claude Code 别过度设计，找一个基于 Karpathy 原则的 CLAUDE.md 模板。","gold_chunk_ids":[],"gold_repo_names":["forrestchang/andrej-karpathy-skills"],"expected_keywords":["karpathy","claude.md","skills"]}
+{"query":"有没有强调把 Karpathy 的 LLM 编码原则嵌入项目规范的实践仓库？","gold_chunk_ids":[],"gold_repo_names":["multica-ai/andrej-karpathy-skills"],"expected_keywords":["karpathy","multica","claude.md"]}
+{"query":"想看能在手机端本地跑 Gemma 这类模型的案例项目。","gold_chunk_ids":[],"gold_repo_names":["google-ai-edge/gallery"],"expected_keywords":["google-ai-edge","gemma","端侧"]}
+{"query":"有没有那种可以自主演化技能树、还能做全系统控制的通用智能体框架？","gold_chunk_ids":[],"gold_repo_names":["lsdefine/GenericAgent"],"expected_keywords":["genericagent","技能树","自演进"]}
+{"query":"我需要把 PDF 和 Office 文档稳定转成 Markdown 给 RAG 用，哪个库靠谱？","gold_chunk_ids":[],"gold_repo_names":["microsoft/markitdown"],"expected_keywords":["markitdown","markdown","rag"]}
+{"query":"有没有开源平台可以托管多个 AI 代理并做任务协作和进度追踪？","gold_chunk_ids":[],"gold_repo_names":["multica-ai/multica"],"expected_keywords":["multica","代理","协作"]}
+{"query":"想研究金融 K 线（OHLCV）时间序列基础模型，有没有开源实现？","gold_chunk_ids":[],"gold_repo_names":["shiyu-coder/Kronos"],"expected_keywords":["kronos","ohlcv","金融"]}
+{"query":"有没有给 Claude Code 做跨会话记忆的工具，能自动压缩和召回上下文？","gold_chunk_ids":[],"gold_repo_names":["thedotmack/claude-mem"],"expected_keywords":["claude-mem","记忆","claude"]}
+{"query":"我想看多智能体模拟投资决策的开源示例，偏教学演示方向。","gold_chunk_ids":[],"gold_repo_names":["virattt/ai-hedge-fund"],"expected_keywords":["ai-hedge-fund","投资","多智能体"]}
+{"query":"做文档预处理时，哪个项目适合把复杂文件统一成 Markdown 并接入 AI 流程？","gold_chunk_ids":[],"gold_repo_names":["microsoft/markitdown"],"expected_keywords":["markitdown","文档","markdown"]}

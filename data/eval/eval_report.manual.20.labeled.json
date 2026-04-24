@@ -1,0 +1,12 @@
+{
+  "answer_checks": {
+    "manual_off_topic_labeled_file": "data\\eval\\manual_off_topic_sample.manual.20.labeled.jsonl",
+    "manual_off_topic_labeled": 20,
+    "manual_off_topic_count": 0,
+    "manual_off_topic_rate": 0.0,
+    "manual_grounded_labeled": 20,
+    "manual_grounded_rate": 1.0,
+    "manual_citation_labeled": 20,
+    "manual_citation_consistent_rate": 1.0
+  }
+}

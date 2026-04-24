@@ -1,0 +1,23 @@
+{
+  "retrieval": {
+    "eval_queries": 10,
+    "baseline_mode": "vector",
+    "candidate_rerank_enabled": true,
+    "recall_at_k_baseline": 0.4,
+    "recall_at_k_candidate": 0.8,
+    "recall_delta": 0.4
+  },
+  "traceability": {
+    "result_level_traceable_rate": 1.0,
+    "traceable_by_chunk_id_rate": 1.0,
+    "traceable_by_path_heading_rate": 1.0,
+    "traceable_results": 10,
+    "total_results": 10
+  },
+  "off_topic_proxy": {
+    "definition": "proxy=1-hit@1（Top1未命中标注视为潜在答非所问）",
+    "baseline": 1.0,
+    "candidate": 0.7,
+    "delta": -0.3
+  }
+}

@@ -1,13 +1,15 @@
-import os
-import time
 import asyncio
+import re
+import time
+from dataclasses import dataclass, field
+from typing import List, Literal, Optional
+
 import aiohttp
 import requests
-from dataclasses import dataclass
-from typing import Optional, Literal, List
 from bs4 import BeautifulSoup
-from app.infrastructure.logging import get_logger
+
 from app.infrastructure.config import get_config
+from app.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -20,12 +22,9 @@ class Repo:
     url: str
     stars: int
     language: Optional[str]
-    forks: int
     stars_today: int
     readme: Optional[str] = None
-    topics: List[str] = None
-    has_pages: bool = False
-    license_key: Optional[str] = None
+    topics: List[str] = field(default_factory=list)
     pushed_at: Optional[str] = None
 
 
@@ -38,8 +37,12 @@ class GitHubFetcher:
         self.token = config.github.token
 
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/vnd.github.v3+json"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/vnd.github.v3+json",
         }
         if self.token:
             self.headers["Authorization"] = f"token {self.token}"
@@ -48,7 +51,7 @@ class GitHubFetcher:
         self,
         language: str = "",
         since: Literal["daily", "weekly", "monthly"] = "daily",
-        limit: int = 10
+        limit: int = 10,
     ) -> List[Repo]:
         repos = self._fetch_from_trending_page(language, since, limit)
         if repos:
@@ -59,38 +62,40 @@ class GitHubFetcher:
         self,
         language: Optional[str] = None,
         date_range: str = "daily",
-        limit: int = 50
+        limit: int = 50,
     ) -> List[Repo]:
-        """获取 Trending 仓库"""
         return self.fetch_trending(language or "", since=date_range, limit=limit)
 
     async def _enrich_repos_async(self, repos: List[Repo]) -> None:
-        """并发获取 README 和补充字段"""
+        # Keep enrichment in parallel to reduce total runtime.
         await asyncio.gather(
             self._fetch_readmes_async(repos),
-            self._fetch_repo_details_async(repos)
+            self._fetch_repo_details_async(repos),
         )
 
     async def _fetch_repo_details_async(self, repos: List[Repo], max_concurrency: int = 10) -> None:
-        """调用 GitHub API 获取项目详情（topics, has_pages, license）"""
+        # Repo details are only used for downstream analysis quality.
         semaphore = asyncio.Semaphore(max_concurrency)
 
         async def fetch_single(session: aiohttp.ClientSession, repo: Repo) -> None:
             async with semaphore:
                 url = f"{self.api_base}/repos/{repo.full_name}"
                 try:
-                    async with session.get(url, headers=self.headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            repo.topics = data.get("topics", [])
-                            repo.has_pages = data.get("has_pages", False)
-                            repo.license_key = data.get("license", {}).get("key") if data.get("license") else None
-                            repo.pushed_at = data.get("pushed_at")
-                            logger.debug(f"获取项目详情成功: {repo.full_name}, topics={repo.topics}")
-                        else:
-                            logger.warning(f"获取项目详情失败: {repo.full_name}, status={resp.status}")
-                except Exception as e:
-                    logger.error(f"获取项目详情异常: {repo.full_name}, error={e}")
+                    async with session.get(
+                        url,
+                        headers=self.headers,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning("fetch repo details failed: %s status=%s", repo.full_name, resp.status)
+                            return
+
+                        data = await resp.json()
+                        repo.topics = data.get("topics", []) or []
+                        repo.pushed_at = data.get("pushed_at")
+                        logger.debug("fetch repo details success: %s topics=%s", repo.full_name, repo.topics)
+                except Exception as error:  # noqa: BLE001
+                    logger.error("fetch repo details error: %s error=%s", repo.full_name, error)
 
         async with aiohttp.ClientSession(headers=self.headers) as session:
             tasks = [fetch_single(session, repo) for repo in repos]
@@ -99,7 +104,7 @@ class GitHubFetcher:
     async def _fetch_readmes_async(self, repos: List[Repo], max_concurrency: int = 10) -> None:
         semaphore = asyncio.Semaphore(max_concurrency)
 
-        async def fetch_single(session: aiohttp.ClientSession, repo: Repo) -> tuple:
+        async def fetch_single(session: aiohttp.ClientSession, repo: Repo) -> tuple[str, Optional[str]]:
             async with semaphore:
                 return repo.full_name, await self._fetch_readme_with_retry(session, repo.full_name)
 
@@ -107,41 +112,51 @@ class GitHubFetcher:
             tasks = [fetch_single(session, repo) for repo in repos]
             results = await asyncio.gather(*tasks)
 
-        for full_name, readme in results:
-            for repo in repos:
-                if repo.full_name == full_name:
-                    repo.readme = readme
-                    break
+        readme_map = {full_name: readme for full_name, readme in results}
+        for repo in repos:
+            repo.readme = readme_map.get(repo.full_name)
 
     async def _fetch_readme_with_retry(
         self,
         session: aiohttp.ClientSession,
         full_name: str,
-        retry_count: int = 0
+        retry_count: int = 0,
     ) -> Optional[str]:
         try:
-            result = await self._fetch_readme_async(session, full_name)
-            return result
-        except RateLimitError as e:
-            if retry_count < self.max_retries:
-                base_delay = 10
-                wait_time = e.retry_after if e.retry_after else min(base_delay * (2 ** retry_count), 120)
-                logger.warning(f"GitHub API 速率限制触发，等待 {wait_time} 秒后重试 ({retry_count + 1}/{self.max_retries})...")
-                await asyncio.sleep(wait_time)
-                return await self._fetch_readme_with_retry(session, full_name, retry_count + 1)
-            else:
-                logger.error(f"GitHub API 速率限制，重试次数耗尽，跳过 {full_name}")
+            return await self._fetch_readme_async(session, full_name)
+        except RateLimitError as error:
+            if retry_count >= self.max_retries:
+                logger.error("readme rate limited and retries exhausted, skip %s", full_name)
                 return None
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            if retry_count < self.max_retries:
-                base_delay = 2
-                wait_time = min(base_delay * (2 ** retry_count), 30)
-                logger.warning(f"获取 {full_name} README 失败 ({e})，{wait_time}秒后重试 ({retry_count + 1}/{self.max_retries})...")
-                await asyncio.sleep(wait_time)
-                return await self._fetch_readme_with_retry(session, full_name, retry_count + 1)
-            else:
-                logger.error(f"获取 {full_name} README 失败次数耗尽，跳过")
+
+            base_delay = 10
+            wait_time = error.retry_after if error.retry_after else min(base_delay * (2**retry_count), 120)
+            logger.warning(
+                "readme rate limited: %s, retry after %ss (%s/%s)",
+                full_name,
+                wait_time,
+                retry_count + 1,
+                self.max_retries,
+            )
+            await asyncio.sleep(wait_time)
+            return await self._fetch_readme_with_retry(session, full_name, retry_count + 1)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            if retry_count >= self.max_retries:
+                logger.error("readme fetch retries exhausted, skip %s error=%s", full_name, error)
                 return None
+
+            base_delay = 2
+            wait_time = min(base_delay * (2**retry_count), 30)
+            logger.warning(
+                "readme fetch failed: %s retry in %ss (%s/%s), error=%s",
+                full_name,
+                wait_time,
+                retry_count + 1,
+                self.max_retries,
+                error,
+            )
+            await asyncio.sleep(wait_time)
+            return await self._fetch_readme_with_retry(session, full_name, retry_count + 1)
 
     async def _fetch_readme_async(self, session: aiohttp.ClientSession, full_name: str) -> Optional[str]:
         url = f"{self.api_base}/repos/{full_name}/readme"
@@ -152,27 +167,18 @@ class GitHubFetcher:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
             if response.status == 200:
                 return await response.text()
-            elif response.status == 404:
+            if response.status == 404:
                 return None
-            elif response.status == 403:
+            if response.status == 403:
                 retry_after = response.headers.get("Retry-After")
-                raise RateLimitError(f"Rate limit exceeded", retry_after=int(retry_after) if retry_after else None)
-            elif response.status == 451:
-                logger.warning(f"{full_name} 因法律原因无法访问")
+                raise RateLimitError("Rate limit exceeded", retry_after=int(retry_after) if retry_after else None)
+            if response.status == 451:
+                logger.warning("readme blocked by legal reasons: %s", full_name)
                 return None
-            else:
-                raise aiohttp.ClientError(f"Unexpected status: {response.status}")
+            raise aiohttp.ClientError(f"Unexpected status: {response.status}")
 
-    def _fetch_from_trending_page(
-        self,
-        language: str,
-        since: str,
-        limit: int
-    ) -> List[Repo]:
-        if language:
-            url = f"https://github.com/trending/{language}?since={since}"
-        else:
-            url = f"https://github.com/trending?since={since}"
+    def _fetch_from_trending_page(self, language: str, since: str, limit: int) -> List[Repo]:
+        url = f"https://github.com/trending/{language}?since={since}" if language else f"https://github.com/trending?since={since}"
 
         response = None
         for retry in range(self.max_retries):
@@ -180,24 +186,21 @@ class GitHubFetcher:
                 response = requests.get(url, headers=self.headers, timeout=self.timeout)
                 response.raise_for_status()
                 break
-            except requests.RequestException as e:
+            except requests.RequestException as error:
                 if retry == self.max_retries - 1:
-                    logger.error(f"获取 GitHub Trending 页面失败，已达最大重试次数: {e}")
+                    logger.error("fetch GitHub trending failed after retries: %s", error)
                     return []
-                base_delay = 2
-                wait_time = min(base_delay * (2 ** retry), 30)
-                logger.warning(f"获取 GitHub Trending 页面失败 ({e})，{wait_time}秒后重试 ({retry + 1}/{self.max_retries})...")
+                wait_time = min(2 * (2**retry), 30)
+                logger.warning("fetch GitHub trending failed, retry in %ss (%s/%s): %s", wait_time, retry + 1, self.max_retries, error)
                 time.sleep(wait_time)
 
         if not response:
             return []
 
         soup = BeautifulSoup(response.text, "html.parser")
-
         article_tags = soup.select("article.Box-row")
-
         if not article_tags:
-            logger.warning(f"未能解析到 Trending 项目，可能页面结构已更新")
+            logger.warning("parse trending page returned 0 repos, page structure may have changed")
             return []
 
         repos = []
@@ -205,7 +208,6 @@ class GitHubFetcher:
             repo = self._parse_article(article)
             if repo:
                 repos.append(repo)
-
         return repos
 
     def _parse_article(self, article) -> Optional[Repo]:
@@ -220,27 +222,21 @@ class GitHubFetcher:
 
             full_name = href.lstrip("/")
             name = full_name.split("/")[1]
-
             url = "https://github.com" + href
 
             description_elem = article.select_one("p")
             description = description_elem.get_text(strip=True) if description_elem else None
 
-            stars_str = article.select_one("a[href*='/stargazers']")
-            stars = self._parse_number(stars_str.get_text(strip=True)) if stars_str else 0
-
-            forks_str = article.select_one("a[href*='/forks']")
-            forks = self._parse_number(forks_str.get_text(strip=True)) if forks_str else 0
+            stars_elem = article.select_one("a[href*='/stargazers']")
+            stars = self._parse_number(stars_elem.get_text(strip=True)) if stars_elem else 0
 
             language_elem = article.select_one("span[itemprop='programmingLanguage']")
             language = language_elem.get_text(strip=True) if language_elem else None
 
-            stars_today_str = article.select_one(".float-sm-right")
+            gain_elem = article.select_one(".float-sm-right")
             stars_today = 0
-            if stars_today_str:
-                text = stars_today_str.get_text(strip=True)
-                if "today" in text.lower():
-                    stars_today = self._parse_number(text.replace(",", "").split()[0])
+            if gain_elem:
+                stars_today = self._parse_trending_stars_gain(gain_elem.get_text(" ", strip=True))
 
             return Repo(
                 name=name,
@@ -249,20 +245,44 @@ class GitHubFetcher:
                 url=url,
                 stars=stars,
                 language=language,
-                forks=forks,
-                stars_today=stars_today
+                stars_today=stars_today,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
 
-    def _parse_number(self, text: str) -> int:
-        text = text.replace(",", "").strip()
-        if text.endswith("k"):
-            return int(float(text[:-1]) * 1000)
-        elif text.endswith("M"):
-            return int(float(text[:-1]) * 1000000)
+    @staticmethod
+    def _parse_trending_stars_gain(text: str) -> int:
+        if not text:
+            return 0
+
+        normalized = " ".join(text.lower().split())
+        if not any(token in normalized for token in ("today", "this week", "this month")):
+            return 0
+
+        # Typical formats:
+        # - "1,234 stars today"
+        # - "2,345 stars this week"
+        # - "987 stars this month"
+        match = re.search(r"([0-9][0-9,]*(?:\.\d+)?[kKmM]?)\s+stars?\s+(today|this week|this month)", normalized)
+        if match:
+            return GitHubFetcher._parse_number(match.group(1))
+
+        # Fallback: if period token exists, parse first numeric token.
+        first_number = re.search(r"([0-9][0-9,]*(?:\.\d+)?[kKmM]?)", normalized)
+        return GitHubFetcher._parse_number(first_number.group(1)) if first_number else 0
+
+    @staticmethod
+    def _parse_number(text: str) -> int:
+        value = (text or "").replace(",", "").strip()
+        if not value:
+            return 0
+        suffix = value[-1]
         try:
-            return int(text)
+            if suffix in {"k", "K"}:
+                return int(float(value[:-1]) * 1000)
+            if suffix in {"m", "M"}:
+                return int(float(value[:-1]) * 1000000)
+            return int(float(value))
         except ValueError:
             return 0
 

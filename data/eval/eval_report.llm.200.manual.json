@@ -1,0 +1,8 @@
+{
+  "answer_checks": {
+    "manual_off_topic_labeled_file": "data\\eval\\manual_off_topic_sample.200.jsonl",
+    "manual_off_topic_labeled": 0,
+    "manual_off_topic_count": 0,
+    "manual_off_topic_rate": null
+  }
+}

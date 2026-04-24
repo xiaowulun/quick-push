@@ -102,8 +102,17 @@ class AnalysisCache:
             self._ensure_column(conn, "analysis_cache", "readme_content TEXT")
             self._ensure_column(conn, "analysis_cache", "readme_hash TEXT")
             self._ensure_column(conn, "analysis_cache", "source_updated_at TEXT")
+            self._ensure_column(conn, "analysis_cache", "search_text TEXT")
+            self._ensure_column(conn, "analysis_cache", "embedding TEXT")
+            self._ensure_column(conn, "analysis_cache", "keywords TEXT")
+            self._ensure_column(conn, "analysis_cache", "tech_stack TEXT")
+            self._ensure_column(conn, "analysis_cache", "use_cases TEXT")
             self._ensure_column(conn, "trending_history", "description TEXT")
             self._ensure_column(conn, "trending_history", "repo_updated_at TEXT")
+            self._ensure_column(conn, "analysis_chunks", "embedding TEXT")
+            self._ensure_column(conn, "analysis_chunks", "keywords TEXT")
+            self._ensure_column(conn, "analysis_chunks", "tech_stack TEXT")
+            self._ensure_column(conn, "analysis_chunks", "use_cases TEXT")
             self._ensure_column(conn, "analysis_chunks", "path TEXT")
             self._ensure_column(conn, "analysis_chunks", "heading TEXT")
             self._ensure_column(conn, "analysis_chunks", "updated_at TEXT")
@@ -124,7 +133,8 @@ class AnalysisCache:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 """
-                SELECT summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at
+                SELECT summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at,
+                       keywords, tech_stack, use_cases
                 FROM analysis_cache
                 WHERE repo_full_name = ?
                 """,
@@ -140,6 +150,9 @@ class AnalysisCache:
                     "readme_content": row["readme_content"] or "",
                     "readme_hash": row["readme_hash"] or "",
                     "source_updated_at": row["source_updated_at"] or "",
+                    "keywords": json.loads(row["keywords"]) if row["keywords"] else [],
+                    "tech_stack": json.loads(row["tech_stack"]) if row["tech_stack"] else [],
+                    "use_cases": json.loads(row["use_cases"]) if row["use_cases"] else [],
                 }
             return None
 
@@ -151,14 +164,34 @@ class AnalysisCache:
         readme_content: Optional[str] = None,
         readme_hash: Optional[str] = None,
         source_updated_at: Optional[str] = None,
+        keywords: Optional[list] = None,
+        tech_stack: Optional[list] = None,
+        use_cases: Optional[list] = None,
     ):
         """保存分析结果到缓存"""
+        keywords_json = json.dumps(keywords) if keywords is not None else None
+        tech_stack_json = json.dumps(tech_stack) if tech_stack is not None else None
+        use_cases_json = json.dumps(use_cases) if use_cases is not None else None
+
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO analysis_cache
-                (repo_full_name, summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO analysis_cache
+                (
+                    repo_full_name, summary, reasons, analyzed_at, readme_content, readme_hash, source_updated_at,
+                    keywords, tech_stack, use_cases
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo_full_name) DO UPDATE SET
+                    summary = excluded.summary,
+                    reasons = excluded.reasons,
+                    analyzed_at = excluded.analyzed_at,
+                    readme_content = excluded.readme_content,
+                    readme_hash = excluded.readme_hash,
+                    source_updated_at = excluded.source_updated_at,
+                    keywords = COALESCE(excluded.keywords, analysis_cache.keywords),
+                    tech_stack = COALESCE(excluded.tech_stack, analysis_cache.tech_stack),
+                    use_cases = COALESCE(excluded.use_cases, analysis_cache.use_cases)
                 """,
                 (
                     repo_full_name,
@@ -168,6 +201,9 @@ class AnalysisCache:
                     readme_content,
                     readme_hash,
                     source_updated_at,
+                    keywords_json,
+                    tech_stack_json,
+                    use_cases_json,
                 )
             )
             conn.commit()
@@ -260,6 +296,157 @@ class AnalysisCache:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_project_detail(self, repo_full_name: str, history_limit: int = 12) -> Optional[Dict]:
+        """按 repo 聚合详情：分析结果 + 最新趋势 + 历史摘要 + 证据片段。"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            analysis_row = conn.execute(
+                """
+                SELECT summary, reasons, keywords, tech_stack, use_cases
+                FROM analysis_cache
+                WHERE repo_full_name = ?
+                """,
+                (repo_full_name,),
+            ).fetchone()
+
+            latest_row = conn.execute(
+                """
+                SELECT
+                    record_date, description, repo_updated_at, language, stars, stars_today, rank, since_type, category
+                FROM trending_history
+                WHERE repo_full_name = ?
+                ORDER BY record_date DESC, rank ASC
+                LIMIT 1
+                """,
+                (repo_full_name,),
+            ).fetchone()
+
+            repo_info_row = conn.execute(
+                """
+                SELECT first_seen, last_seen, total_appearances, category
+                FROM repo_info
+                WHERE repo_full_name = ?
+                """,
+                (repo_full_name,),
+            ).fetchone()
+
+            if not analysis_row and not latest_row and not repo_info_row:
+                return None
+
+            history_rows = conn.execute(
+                """
+                SELECT record_date, stars, stars_today, rank, since_type, language, category
+                FROM trending_history
+                WHERE repo_full_name = ?
+                ORDER BY record_date DESC, rank ASC
+                LIMIT ?
+                """,
+                (repo_full_name, max(1, int(history_limit))),
+            ).fetchall()
+
+            evidence_row = conn.execute(
+                """
+                SELECT chunk_id, chunk_text, section, path, heading, updated_at
+                FROM analysis_chunks
+                WHERE repo_full_name = ?
+                ORDER BY
+                    CASE WHEN section LIKE 'readme:%' THEN 0 ELSE 1 END,
+                    chunk_index ASC
+                LIMIT 1
+                """,
+                (repo_full_name,),
+            ).fetchone()
+
+            def _json_list(value):
+                if not value:
+                    return []
+                try:
+                    data = json.loads(value)
+                    return data if isinstance(data, list) else []
+                except (TypeError, json.JSONDecodeError):
+                    return []
+
+            trend_history: List[Dict] = []
+            for row in history_rows:
+                trend_history.append(
+                    {
+                        "record_date": str(row["record_date"]) if row["record_date"] is not None else "",
+                        "stars": int(row["stars"] or 0),
+                        "stars_today": int(row["stars_today"] or 0),
+                        "rank": row["rank"],
+                        "since_type": row["since_type"],
+                        "language": row["language"],
+                        "category": row["category"],
+                    }
+                )
+
+            best_rank = None
+            ranks = [int(item["rank"]) for item in trend_history if item.get("rank") is not None]
+            if ranks:
+                best_rank = min(ranks)
+
+            if trend_history:
+                first_seen = trend_history[-1]["record_date"]
+                last_seen = trend_history[0]["record_date"]
+                latest_stars = trend_history[0]["stars"]
+                avg_stars_today = round(
+                    sum(item.get("stars_today", 0) for item in trend_history) / len(trend_history), 2
+                )
+            else:
+                first_seen = str(repo_info_row["first_seen"]) if repo_info_row and repo_info_row["first_seen"] else None
+                last_seen = str(repo_info_row["last_seen"]) if repo_info_row and repo_info_row["last_seen"] else None
+                latest_stars = int(latest_row["stars"] or 0) if latest_row else 0
+                avg_stars_today = float(latest_row["stars_today"] or 0) if latest_row else 0.0
+
+            category = "infra_and_tools"
+            if latest_row and latest_row["category"]:
+                category = latest_row["category"]
+            elif repo_info_row and repo_info_row["category"]:
+                category = repo_info_row["category"]
+
+            basic = {
+                "repo_full_name": repo_full_name,
+                "url": f"https://github.com/{repo_full_name}",
+                "description": latest_row["description"] if latest_row and latest_row["description"] else "",
+                "language": latest_row["language"] if latest_row and latest_row["language"] else "Unknown",
+                "category": category,
+                "stars": int(latest_row["stars"] or 0) if latest_row else 0,
+                "stars_today": int(latest_row["stars_today"] or 0) if latest_row else 0,
+                "rank": latest_row["rank"] if latest_row else None,
+                "since_type": latest_row["since_type"] if latest_row else None,
+                "repo_updated_at": latest_row["repo_updated_at"] if latest_row else None,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "total_appearances": int(repo_info_row["total_appearances"] or 0) if repo_info_row else len(trend_history),
+            }
+
+            return {
+                "basic": basic,
+                "summary": analysis_row["summary"] if analysis_row else "",
+                "reasons": _json_list(analysis_row["reasons"]) if analysis_row else [],
+                "keywords": _json_list(analysis_row["keywords"]) if analysis_row else [],
+                "tech_stack": _json_list(analysis_row["tech_stack"]) if analysis_row else [],
+                "use_cases": _json_list(analysis_row["use_cases"]) if analysis_row else [],
+                "evidence": {
+                    "chunk_id": evidence_row["chunk_id"] if evidence_row else None,
+                    "chunk_text": evidence_row["chunk_text"] if evidence_row and evidence_row["chunk_text"] else "",
+                    "section": evidence_row["section"] if evidence_row else None,
+                    "path": evidence_row["path"] if evidence_row else None,
+                    "heading": evidence_row["heading"] if evidence_row else None,
+                    "updated_at": evidence_row["updated_at"] if evidence_row else None,
+                },
+                "trend_summary": {
+                    "total_records": len(trend_history),
+                    "first_seen": first_seen,
+                    "last_seen": last_seen,
+                    "best_rank": best_rank,
+                    "latest_stars": latest_stars,
+                    "avg_stars_today": avg_stars_today,
+                },
+                "trend_history": trend_history,
+            }
 
     def set_with_embedding(
         self,

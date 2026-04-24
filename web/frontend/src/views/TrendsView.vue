@@ -70,6 +70,11 @@
               v-for="(proj, index) in topProjects" 
               :key="proj.repo_name"
               class="ranking-item"
+              role="button"
+              tabindex="0"
+              @click="goToDetail(proj.repo_name)"
+              @keydown.enter.prevent="goToDetail(proj.repo_name)"
+              @keydown.space.prevent="goToDetail(proj.repo_name)"
             >
               <div class="rank-number" :class="getRankClass(index)">
                 {{ index + 1 }}
@@ -90,6 +95,7 @@
 
 <script setup>
 import { ref, computed, inject, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import { Chart, registerables } from 'chart.js'
 import StatCard from '@/components/StatCard.vue'
 import { useApi } from '@/composables/useApi'
@@ -97,6 +103,7 @@ import { useApi } from '@/composables/useApi'
 Chart.register(...registerables)
 
 const { fetchTrends, loading, error } = useApi()
+const router = useRouter()
 const timeFilter = inject('trendsTimeFilter')
 
 const data = ref(null)
@@ -136,6 +143,14 @@ function getCategoryName(category) {
     'unknown': '未分类'
   }
   return names[category] || category
+}
+
+function goToDetail(repoFullName) {
+  if (!repoFullName) return
+  router.push({
+    name: 'ProjectDetail',
+    params: { repoFullName }
+  })
 }
 
 function createChart() {
@@ -349,11 +364,17 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.03);
   border-radius: 12px;
   transition: all 0.3s ease;
+  cursor: pointer;
 }
 
 .ranking-item:hover {
   background: rgba(123, 104, 238, 0.05);
   transform: translateX(4px);
+}
+
+.ranking-item:focus-visible {
+  outline: 2px solid rgba(123, 104, 238, 0.45);
+  outline-offset: 2px;
 }
 
 .rank-number {

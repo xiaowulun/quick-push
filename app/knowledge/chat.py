@@ -1,11 +1,10 @@
-"""
+﻿"""
 RAG 对话服务模块
 
 实现基于 GitHub Trending 数据库的智能问答功能
 
-搜索流程：
-1. 粗排：混合检索（向量 + BM25）→ RRF 融合 → top 20
-2. 精排：Cross-Encoder 重排序 → top 5
+搜索流程：1. 粗排：混合检索（向量 + BM25）→ RRF 融合 → top 20
+2. 精排：Cross-Encoder 重排 → top 5
 3. LLM 生成回答
 """
 
@@ -21,7 +20,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from openai import OpenAI
 
 from app.infrastructure.config import get_config
-from app.infrastructure.cache import AnalysisCache
 from app.infrastructure.session import get_session_manager
 from app.knowledge.search import SearchService
 from app.knowledge.query_parser import QueryFilters, get_query_parser
@@ -41,6 +39,7 @@ class RetrievedProject:
     stars: Optional[int] = None
     url: str = ""
     source_id: Optional[str] = None
+    chunk_id: Optional[str] = None
     evidence_section: Optional[str] = None
     evidence_path: Optional[str] = None
     evidence_heading: Optional[str] = None
@@ -50,85 +49,84 @@ class RetrievedProject:
 class RAGChatService:
     """RAG 对话服务"""
 
-    SYSTEM_PROMPT = """你是一个专业的 GitHub 开源项目推荐助手。你的任务是基于 GitHub Trending 榜单数据，帮助用户找到最适合他们需求的开源项目。
+    SYSTEM_PROMPT = """你是专业的 GitHub 开源项目推荐助手。
+请基于检索结果回答用户问题，并给出清晰、可执行的建议。
+格式要求：
+1) 输出纯文本分点，不使用 Markdown 标题（# / ##）和表格。
+2) 首行直接开始正文，不要输出前导空行。
+3) 不使用寒暄开场（如“你好”）。"""
 
-## 你的能力
-- 理解用户的技术需求和使用场景
-- 从数据库中检索相关的热门开源项目
-- 提供专业的项目推荐和分析
+    CHAT_SYSTEM_PROMPT = """你是友好的技术助手。
+当用户寒暄时，简短回应并引导其提出具体技术需求。
+格式要求：
+1) 输出纯文本，不使用 Markdown 标题（# / ##）和表格。
+2) 首行直接输出结论，不要空行，不要“你好”式开场。"""
 
-## 回答要求
-1. 使用自然、友好的对话语气
-2. 推荐项目时，说明为什么这些项目适合用户的需求
-3. 对每个推荐的项目，简要介绍其核心功能和优势
-4. 如果数据库中没有完全匹配的项目，诚实告知并推荐最接近的选项
-5. 回答要简洁明了，重点突出
+    NO_MATCH_SYSTEM_PROMPT = """当检索不到合适项目时：
+1) 明确说明当前数据中暂无匹配结果。
+2) 给出通用方向和下一步搜索建议。
+3) 不要编造不存在的项目。
+格式要求：输出纯文本分点，不使用 Markdown 标题（# / ##）和表格，首行不要空行。"""
 
-## 回答格式
-- 开头简要回应问题
-- 列出推荐项目（使用数字编号）
-- 每个项目包含：项目名称、核心功能、为什么推荐
-- 结尾可以提供使用建议或进一步的问题"""
-
-    CHAT_SYSTEM_PROMPT = """你是一个友好的 GitHub 开源项目推荐助手。当用户与你打招呼或进行闲聊时，请友好地回应，并引导他们询问关于开源项目、技术工具、编程框架等方面的问题。
-
-## 你的特点
-- 热情友好，乐于助人
-- 专注于帮助用户发现优质的开源项目
-- 能够理解用户的技术需求并给出专业建议
-
-## 回应方式
-- 如果用户打招呼，热情回应并介绍你的功能
-- 如果用户闲聊，友好回应并引导到技术话题
-- 保持简洁，不要过于冗长"""
-
-    NO_MATCH_SYSTEM_PROMPT = """你是一个专业的 GitHub 开源项目推荐助手。
-
-当前情况：用户询问了一个技术问题，但数据库中没有找到足够相关的项目数据。
-
-## 你的任务
-1. 诚实告知用户数据库中没有相关的 GitHub Trending 项目
-2. 基于你的专业知识，给用户一些通用的建议和方向
-3. 引导用户尝试其他相关的搜索词
-
-## 回答要求
-- 诚实透明，不要编造不存在的项目
-- 提供有价值的通用建议
-- 保持友好和专业
-- 建议用户可以尝试其他搜索词"""
-
-    RAG_PROMPT_TEMPLATE = """基于以下检索到的 GitHub Trending 项目信息，回答用户的问题。
+    RAG_PROMPT_TEMPLATE = """基于以下 GitHub Trending 检索结果回答用户问题。
 
 ## 用户问题
 {query}
 
-## 检索到的相关项目（按相关度排序）
-
+## 检索结果
 {projects_context}
 
----
-
-请基于以上项目信息，用中文回答用户的问题。如果项目信息不足以完全回答问题，可以适当补充你的专业知识，但要明确说明哪些是基于数据库的信息，哪些是你的补充建议。"""
+请用中文回答，并区分“基于检索结果的信息”和“补充建议”。
+格式要求：输出纯文本分点，不使用 Markdown 标题（# / ##）和表格，首行不要空行。"""
 
     TECHNICAL_KEYWORDS = [
         "框架", "库", "工具", "项目", "开源", "github", "代码", "编程", "开发",
         "python", "javascript", "java", "go", "rust", "typescript", "react", "vue",
         "ai", "机器学习", "深度学习", "爬虫", "数据库", "api", "前端", "后端",
         "推荐", "有没有", "什么", "哪个", "如何", "怎么", "帮助", "找", "搜索",
-        "框架", "组件", "插件", "sdk", "cli", "web", "app", "docker", "kubernetes",
-        "可视化", "图表", "测试", "部署", "监控", "日志", "安全", "性能", "算法"
+        "组件", "插件", "sdk", "cli", "web", "app", "docker", "kubernetes",
+        "可视化", "图表", "测试", "部署", "监控", "日志", "安全", "性能", "算法",
+    ]
+
+    PLANNING_KEYWORDS = [
+        "mvp", "roadmap", "路线图", "里程碑", "排期", "优先级",
+        "版本规划", "需求拆解", "功能优先级", "上线计划", "本周上线",
+        "迭代计划", "交付计划", "能力规划",
+    ]
+
+    RETRIEVAL_ACTION_KEYWORDS = [
+        "推荐", "有什么", "有哪些", "找", "搜索", "检索", "对比", "比较", "选型",
+        "热门", "高星", "最近", "榜单", "top", "best", "列举", "列出", "几个", "哪个好",
+    ]
+
+    RETRIEVAL_OBJECT_KEYWORDS = [
+        "项目", "仓库", "repo", "repository", "github", "trending", "开源", "框架", "工具",
+    ]
+
+    CONCEPTUAL_CHAT_KEYWORDS = [
+        "了解", "是什么", "啥是", "介绍", "原理", "概念", "教程", "学习", "入门", "解释", "科普", "怎么理解", "区别",
+        "what is", "learn", "overview", "introduction", "concept", "principle",
     ]
 
     GREETING_PATTERNS = [
         "你好", "您好", "hi", "hello", "嗨", "哈喽", "在吗", "在不在",
-        "早上好", "下午好", "晚上好", "早安", "晚安"
-    ]
-    
-    FOLLOWUP_PATTERNS = [
-        "再看看", "换一个", "还有吗", "其他的", "下一个", "继续", "更多",
-        "还有别的吗", "再来几个", "换一批", "重新推荐"
+        "早上好", "下午好", "晚上好", "早安", "晚安",
     ]
 
+    FOLLOWUP_PATTERNS = [
+        "再看看", "换一个", "还有吗", "其他的", "下一个", "继续", "更多",
+        "还有别的吗", "再来几个", "换一批", "重新推荐",
+    ]
+
+    EASY_TASK_HINTS = {
+        "hi", "hello", "thanks", "thank you",
+        "你好", "您好", "谢谢", "在吗", "嗨", "晚安",
+    }
+    HARD_TASK_KEYWORDS = [
+        "架构", "设计", "权衡", "tradeoff", "benchmark", "性能", "优化", "并发", "分布式",
+        "安全", "迁移", "故障", "调优", "复杂", "深入", "比较", "对比", "落地", "方案",
+        "architecture", "design", "optimization", "security", "scalability", "migration",
+    ]
     VALID_CATEGORIES = {
         "ai_ecosystem",
         "infra_and_tools",
@@ -138,7 +136,6 @@ class RAGChatService:
 
     def __init__(self):
         self.config = get_config()
-        self.cache = AnalysisCache()
         self.search_service = SearchService()
         self.session_manager = get_session_manager()
         self.request_timeout = int(getattr(self.config.openai, "request_timeout", 90))
@@ -147,7 +144,9 @@ class RAGChatService:
             base_url=self.config.openai.base_url,
             timeout=self.request_timeout,
         )
-        self.model = self.config.openai.model_chat
+        # Keep a stable default model field for external logging compatibility.
+        self.model = self.config.openai.model_medium
+        self.rag_max_tokens = max(300, int(getattr(self.config.rag_chat, "max_tokens", 1200)))
         self.min_confidence = float(os.getenv("CHAT_MIN_CONFIDENCE", "0.42"))
         self.query_parser = get_query_parser()
 
@@ -186,27 +185,174 @@ class RAGChatService:
             "status_code": 500,
         }
 
-    def _is_technical_query(self, query: str) -> bool:
-        """判断用户问题是否与技术/项目相关"""
-        query_lower = query.lower().strip()
-        
-        for pattern in self.GREETING_PATTERNS:
-            if query_lower == pattern.lower() or query_lower.startswith(pattern.lower()):
-                return False
-        
-        if len(query) < 3:
+    @staticmethod
+    def _is_model_not_found_error(error: Exception) -> bool:
+        msg = str(error or "").lower()
+        return (
+            "model does not exist" in msg
+            or "invalid model" in msg
+            or "code': 20012" in msg
+            or '"code": 20012' in msg
+        )
+
+    def _estimate_query_difficulty(self, query: str, *, retrieval: bool) -> str:
+        query_lower = str(query or "").strip().lower()
+        if not query_lower:
+            return "easy"
+
+        if query_lower in self.EASY_TASK_HINTS:
+            return "easy"
+        if self._is_planning_query(query):
+            return "hard"
+        if any(keyword in query_lower for keyword in self.HARD_TASK_KEYWORDS):
+            return "hard"
+
+        if retrieval:
+            if len(query_lower) >= 80:
+                return "hard"
+            return "medium"
+
+        if len(query_lower) <= 12:
+            return "easy"
+        return "medium"
+
+    def select_model_for_query(self, query: str, *, retrieval: bool = False) -> str:
+        difficulty = self._estimate_query_difficulty(query=query, retrieval=retrieval)
+        if difficulty == "easy":
+            return self.config.openai.model_easy
+        if difficulty == "hard":
+            return self.config.openai.model_hard
+        return self.config.openai.model_medium
+
+    def preview_model_for_query(self, query: str) -> str:
+        return self.select_model_for_query(query=query, retrieval=self._has_retrieval_intent(query))
+
+    def _build_model_candidates(
+        self,
+        preferred_model: Optional[str] = None,
+        *,
+        query: str = "",
+        retrieval: bool = False,
+    ) -> List[str]:
+        chosen_model = preferred_model or self.select_model_for_query(query=query, retrieval=retrieval)
+
+        easy = self.config.openai.model_easy
+        medium = self.config.openai.model_medium
+        hard = self.config.openai.model_hard
+
+        if chosen_model == easy:
+            ordered = [easy, medium, hard]
+        elif chosen_model == hard:
+            ordered = [hard, medium, easy]
+        else:
+            ordered = [medium, hard, easy]
+
+        candidates: List[str] = []
+        for model in [chosen_model, *ordered]:
+            m = str(model or "").strip()
+            if m and m not in candidates:
+                candidates.append(m)
+        return candidates
+
+    def _create_chat_completion_with_fallback(self, **kwargs):
+        preferred_model = kwargs.pop("model", None)
+        query = str(kwargs.pop("query", "") or "")
+        retrieval = bool(kwargs.pop("retrieval", False))
+        last_error: Optional[Exception] = None
+
+        for model_name in self._build_model_candidates(
+            preferred_model=preferred_model,
+            query=query,
+            retrieval=retrieval,
+        ):
+            try:
+                return self.client.chat.completions.create(model=model_name, **kwargs)
+            except Exception as error:
+                last_error = error
+                if self._is_model_not_found_error(error):
+                    logger.warning(
+                        "chat model unavailable, fallback to next model: model=%s error=%s",
+                        model_name,
+                        str(error),
+                    )
+                    continue
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No available model candidates for chat completion")
+
+    def _has_retrieval_intent(self, query: str) -> bool:
+        """Return True only when query likely asks for repo/project retrieval."""
+        query_lower = (query or "").lower().strip()
+        if len(query_lower) < 2:
             return False
-        
-        for keyword in self.TECHNICAL_KEYWORDS:
-            if keyword.lower() in query_lower:
-                return True
-        
-        return len(query) >= 8
-    
+
+        for pattern in self.GREETING_PATTERNS:
+            p = pattern.lower()
+            if query_lower == p or query_lower.startswith(p):
+                return False
+
+        has_action = any(keyword.lower() in query_lower for keyword in self.RETRIEVAL_ACTION_KEYWORDS) or bool(
+            re.search(
+                "(\u6709\u4ec0\u4e48|\u6709\u54ea\u4e9b|\u63a8\u8350|\u6bd4\u8f83|\u54ea\u4e2a\u597d|\u627e|\u641c\u7d22|\u68c0\u7d22)",
+                query_lower,
+            )
+        )
+        has_object = any(keyword.lower() in query_lower for keyword in self.RETRIEVAL_OBJECT_KEYWORDS) or bool(
+            re.search(
+                "(\u9879\u76ee|\u4ed3\u5e93|\u5f00\u6e90|\u6846\u67b6|\u5de5\u5177|github|repo|repository|trending)",
+                query_lower,
+            )
+        )
+        has_technical = any(keyword.lower() in query_lower for keyword in self.TECHNICAL_KEYWORDS)
+        has_conceptual = any(keyword.lower() in query_lower for keyword in self.CONCEPTUAL_CHAT_KEYWORDS) or bool(
+            re.search(
+                "(\u4e86\u89e3|\u662f\u4ec0\u4e48|\u4ecb\u7ecd|\u539f\u7406|\u6982\u5ff5|\u6559\u7a0b|\u5b66\u4e60|\u5165\u95e8|\u89e3\u91ca|\u600e\u4e48\u7406\u89e3|\u533a\u522b)",
+                query_lower,
+            )
+        )
+
+        # Concept-learning queries should stay in plain LLM chat unless user
+        # clearly asks for retrieval/recommendation.
+        if has_conceptual and not has_action:
+            return False
+
+        # RAG requires explicit retrieval action + (object context or technical context).
+        if has_action and (has_object or has_technical):
+            return True
+
+        # Object-only mention is not enough (e.g. "了解一个 AI agent 项目").
+        return False
+
+    def _is_technical_query(self, query: str) -> bool:
+        """Backward-compatible alias: now means retrieval-intent query."""
+        return self._has_retrieval_intent(query)
+
+    def _should_use_rag(self, query: str, session: Any) -> bool:
+        """Decide whether to enter RAG retrieval pipeline."""
+        if self._is_followup_query(query, session) and session.last_filters:
+            return True
+        return self._has_retrieval_intent(query)
+
+    def _is_planning_query(self, query: str) -> bool:
+        """判断是否是规划/排期类问题。"""
+        query_lower = (query or "").lower().strip()
+        if not query_lower:
+            return False
+        return any(keyword.lower() in query_lower for keyword in self.PLANNING_KEYWORDS)
+
+    def _build_low_confidence_prefix(self, confidence: float) -> str:
+        """Low-confidence warning prefix for soft answers."""
+        return (
+            f"说明：当前检索置信度较低（{confidence:.2f} < 阈值 {self.min_confidence:.2f}），"
+            "以下结论更偏方向性建议，建议结合你的技术栈与目标用户做二次确认。\n\n"
+        )
+
     def _is_followup_query(self, query: str, session) -> bool:
-        """判断是否是追问"""
+        """判断是否是追问。"""
         query_lower = query.lower().strip()
-        
+
         if not session.last_query_time:
             return False
 
@@ -221,7 +367,7 @@ class RAGChatService:
 
         # Only explicit short ellipsis prompts are treated as follow-up.
         terse_followup = {
-            "还有呢", "然后呢", "继续", "再说说", "展开讲讲", "细说", "具体点", "举例", "对比下",
+            "还有吗", "然后呢", "继续", "再说说", "展开讲讲", "细说", "具体点", "举例", "对比下",
             "what else", "go on", "continue", "more",
         }
         if query_lower in terse_followup:
@@ -319,7 +465,8 @@ class RAGChatService:
         for p in projects[:5]:
             sid = p.source_id or "-"
             heading = p.evidence_heading or p.evidence_section or "README"
-            lines.append(f"[{sid}] {p.repo_full_name} | {heading} | {p.url}")
+            chunk = p.chunk_id or "-"
+            lines.append(f"[{sid}] {p.repo_full_name} | {heading} | chunk={chunk} | {p.url}")
         return "\n".join(lines)
 
     def _build_low_confidence_answer(
@@ -347,12 +494,12 @@ class RAGChatService:
         filters: QueryFilters = None
     ) -> List[RetrievedProject]:
         """
-        检索相关项目（使用混合检索 + Rerank）
-        
+        检索相关项目（使用混合检索 + Rerank）。
+
         流程：
         1. 粗排：混合检索（向量 + BM25）→ RRF 融合 → top 20
-        2. 精排：Cross-Encoder 重排序 → top 5
-        
+        2. 精排：Cross-Encoder 重排 → top 5
+
         Args:
             query: 用户查询
             top_k: 最终返回数量
@@ -382,6 +529,7 @@ class RAGChatService:
                     stars=item.get("stars"),
                     url=f"https://github.com/{item.get('repo_full_name', '')}",
                     source_id=f"S{idx}",
+                    chunk_id=item.get("chunk_id"),
                     evidence_section=item.get("evidence_section"),
                     evidence_path=item.get("path") or "README.md",
                     evidence_heading=item.get("heading") or item.get("evidence_section"),
@@ -396,14 +544,34 @@ class RAGChatService:
             logger.error(f"检索项目失败：{str(e)}")
             return []
 
+    async def _retrieve_projects_with_filter_fallback(
+        self,
+        query: str,
+        top_k: int,
+        filters: Optional[QueryFilters],
+    ) -> List[RetrievedProject]:
+        """
+        Try retrieval with parsed filters first; if it returns empty, fallback to no filters.
+        This prevents over-restrictive parser output from causing avoidable no-match answers.
+        """
+        projects = await self.retrieve_projects(query, top_k, filters=filters)
+        if projects:
+            return projects
+
+        if not filters or not filters.has_filters():
+            return projects
+
+        logger.info("过滤条件检索为空，回退无过滤重试: query=%s filters=%s", query, filters.model_dump())
+        return await self.retrieve_projects(query, top_k, filters=None)
+
     def _format_projects_context(self, projects: List[RetrievedProject]) -> str:
-        """格式化项目信息为上下文"""
+        """格式化项目信息为上下文。"""
         if not projects:
-            return "未找到相关项目"
+            return "未找到相关项目。"
 
         context_parts = []
         for i, project in enumerate(projects, 1):
-            stars_str = f"⭐ {project.stars:,}" if project.stars else ""
+            stars_str = f"⭐{project.stars:,}" if project.stars else ""
             lang_str = f"[{project.language}]" if project.language else ""
             source_id = project.source_id or f"S{i}"
             heading = project.evidence_heading or project.evidence_section or "README"
@@ -418,45 +586,66 @@ class RAGChatService:
 - 项目简介：{project.summary}
 - 证据位置：{project.evidence_path or 'README.md'} / {heading}
 - 核心特点:
-{chr(10).join(f'  • {r}' for r in project.reasons)}
+{chr(10).join(f'  - {r}' for r in project.reasons)}
 - 证据片段：{snippet or '（无）'}
 - GitHub: {project.url}"""
             context_parts.append(project_info)
 
         return "\n\n".join(context_parts)
 
-    async def _chat_without_retrieval(self, query: str) -> AsyncGenerator[Dict, None]:
-        """不检索项目的纯对话模式"""
-        yield {
-            "type": "status",
-            "content": "正在思考..."
-        }
+    @staticmethod
+    def _build_history_projects(projects: Optional[List[RetrievedProject]]) -> List[Dict[str, Any]]:
+        if not projects:
+            return []
+        return [
+            {
+                "repo_full_name": p.repo_full_name,
+                "summary": p.summary,
+                "similarity": p.similarity,
+            }
+            for p in projects
+        ]
 
-        yield {
-            "type": "content_start"
-        }
+    def _persist_session_answer(
+        self,
+        session: Any,
+        query: str,
+        answer: str,
+        projects: Optional[List[RetrievedProject]] = None,
+    ) -> None:
+        if not answer:
+            return
+        session.add_to_history(query, answer, self._build_history_projects(projects))
+        session.query_count += 1
+
+    async def _stream_chat_response(
+        self,
+        *,
+        query: str,
+        retrieval: bool,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        status_text: str = "正在思考...",
+        temperature: float = 0.7,
+    ) -> AsyncGenerator[Dict, None]:
+        yield {"type": "status", "content": status_text}
+        yield {"type": "content_start"}
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.CHAT_SYSTEM_PROMPT},
-                    {"role": "user", "content": query}
-                ],
+            selected_model = self.select_model_for_query(query=query, retrieval=retrieval)
+            response = self._create_chat_completion_with_fallback(
+                model=selected_model,
+                query=query,
+                retrieval=retrieval,
+                messages=messages,
                 stream=True,
-                temperature=0.7,
-                max_tokens=500,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 timeout=self.request_timeout,
             )
-
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    yield {
-                        "type": "content",
-                        "content": content
-                    }
-
+                    yield {"type": "content", "content": chunk.choices[0].delta.content}
         except Exception as e:
             err = self._classify_chat_error(e)
             logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
@@ -466,54 +655,51 @@ class RAGChatService:
                 "content": err["message"],
             }
 
-        yield {
-            "type": "done"
-        }
+        yield {"type": "done"}
+
+    async def _stream_and_persist(
+        self,
+        *,
+        session: Any,
+        query: str,
+        stream: AsyncGenerator[Dict, None],
+        projects: Optional[List[RetrievedProject]] = None,
+    ) -> AsyncGenerator[Dict, None]:
+        full_answer = ""
+        async for chunk in stream:
+            if chunk.get("type") == "content" and chunk.get("content"):
+                full_answer += chunk["content"]
+            yield chunk
+        self._persist_session_answer(session, query, full_answer, projects)
+
+    async def _chat_without_retrieval(self, query: str) -> AsyncGenerator[Dict, None]:
+        """不检索项目的纯对话模式。"""
+        async for chunk in self._stream_chat_response(
+            query=query,
+            retrieval=False,
+            messages=[
+                {"role": "system", "content": self.CHAT_SYSTEM_PROMPT},
+                {"role": "user", "content": query},
+            ],
+            max_tokens=500,
+        ):
+            yield chunk
 
     async def _chat_no_match(self, query: str) -> AsyncGenerator[Dict, None]:
         """数据库中没有匹配项目时的对话模式"""
-        yield {
-            "type": "status",
-            "content": "正在思考..."
-        }
-
-        yield {
-            "type": "content_start"
-        }
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.NO_MATCH_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"用户问题：{query}\n\n请回答用户的问题，并告知数据库中没有找到相关的 GitHub Trending 项目。"}
-                ],
-                stream=True,
-                temperature=0.7,
-                max_tokens=800,
-                timeout=self.request_timeout,
-            )
-
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    yield {
-                        "type": "content",
-                        "content": content
-                    }
-
-        except Exception as e:
-            err = self._classify_chat_error(e)
-            logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
-            yield {
-                "type": "error",
-                "code": err["code"],
-                "content": err["message"],
-            }
-
-        yield {
-            "type": "done"
-        }
+        async for chunk in self._stream_chat_response(
+            query=query,
+            retrieval=True,
+            messages=[
+                {"role": "system", "content": self.NO_MATCH_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"用户问题：{query}\n\n请回答用户的问题，并告知数据库中没有找到相关 GitHub Trending 项目。",
+                },
+            ],
+            max_tokens=800,
+        ):
+            yield chunk
 
     async def chat_stream(
         self,
@@ -529,16 +715,13 @@ class RAGChatService:
             "session_id": session.session_id
         }
 
-        if not self._is_technical_query(query):
-            full_answer = ""
-            async for chunk in self._chat_without_retrieval(query):
-                if chunk.get("type") == "content" and chunk.get("content"):
-                    full_answer += chunk["content"]
+        if not self._should_use_rag(query, session):
+            async for chunk in self._stream_and_persist(
+                session=session,
+                query=query,
+                stream=self._chat_without_retrieval(query),
+            ):
                 yield chunk
-
-            if full_answer:
-                session.add_to_history(query, full_answer, [])
-                session.query_count += 1
             return
 
         yield {
@@ -560,22 +743,21 @@ class RAGChatService:
             session.last_filters = filters if filters.has_filters() else None
             session.last_query_time = datetime.now()
         
-        projects = await self.retrieve_projects(query, top_k, filters=filters)
+        projects = await self._retrieve_projects_with_filter_fallback(query, top_k, filters=filters)
 
         if not projects:
-            full_answer = ""
-            async for chunk in self._chat_no_match(query):
-                if chunk.get("type") == "content" and chunk.get("content"):
-                    full_answer += chunk["content"]
+            async for chunk in self._stream_and_persist(
+                session=session,
+                query=query,
+                stream=self._chat_no_match(query),
+            ):
                 yield chunk
-
-            if full_answer:
-                session.add_to_history(query, full_answer, [])
-                session.query_count += 1
             return
 
         retrieval_confidence = self._compute_retrieval_confidence(projects)
-        if retrieval_confidence < self.min_confidence:
+        low_confidence_hit = retrieval_confidence < self.min_confidence
+        allow_soft_answer = low_confidence_hit and self._is_planning_query(query)
+        if low_confidence_hit and not allow_soft_answer:
             low_conf_answer = self._build_low_confidence_answer(query, projects, retrieval_confidence)
             yield {
                 "type": "status",
@@ -583,17 +765,15 @@ class RAGChatService:
             }
             yield {"type": "content_start"}
             yield {"type": "content", "content": low_conf_answer}
-            session.add_to_history(query, low_conf_answer, [
-                {
-                    "repo_full_name": p.repo_full_name,
-                    "summary": p.summary,
-                    "similarity": p.similarity
-                }
-                for p in projects
-            ])
-            session.query_count += 1
+            self._persist_session_answer(session, query, low_conf_answer, projects)
             yield {"type": "done"}
             return
+        if allow_soft_answer:
+            logger.info(
+                "low confidence but planning query, continue with soft warning answer: confidence=%.4f threshold=%.4f",
+                retrieval_confidence,
+                self.min_confidence,
+            )
 
         yield {
             "type": "status",
@@ -626,16 +806,26 @@ class RAGChatService:
         }
 
         full_answer = ""
+        if allow_soft_answer:
+            low_conf_prefix = self._build_low_confidence_prefix(retrieval_confidence)
+            full_answer += low_conf_prefix
+            yield {
+                "type": "content",
+                "content": low_conf_prefix
+            }
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            selected_model = self.select_model_for_query(query=query, retrieval=True)
+            response = self._create_chat_completion_with_fallback(
+                model=selected_model,
+                query=query,
+                retrieval=True,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
                 stream=True,
                 temperature=0.7,
-                max_tokens=2000,
+                max_tokens=self.rag_max_tokens,
                 timeout=self.request_timeout,
             )
 
@@ -656,15 +846,7 @@ class RAGChatService:
                     "content": appendix
                 }
 
-            session.add_to_history(query, full_answer, [
-                {
-                    "repo_full_name": p.repo_full_name,
-                    "summary": p.summary,
-                    "similarity": p.similarity
-                }
-                for p in projects
-            ])
-            session.query_count += 1
+            self._persist_session_answer(session, query, full_answer, projects)
 
         except Exception as e:
             err = self._classify_chat_error(e)
@@ -679,168 +861,3 @@ class RAGChatService:
             "type": "done"
         }
 
-    async def chat(self, query: str, top_k: int = 5, session_id: Optional[str] = None) -> Dict:
-        """非流式对话"""
-        session = self.session_manager.get_or_create(session_id)
-
-        if not self._is_technical_query(query):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": self.CHAT_SYSTEM_PROMPT},
-                        {"role": "user", "content": query}
-                    ],
-                    temperature=0.7,
-                    max_tokens=500,
-                    timeout=self.request_timeout,
-                )
-                return {
-                    "answer": response.choices[0].message.content,
-                    "projects": [],
-                    "success": True,
-                    "session_id": session.session_id
-                }
-            except Exception as e:
-                err = self._classify_chat_error(e)
-                return {
-                    "answer": err["message"],
-                    "projects": [],
-                    "success": False,
-                    "session_id": session.session_id,
-                    "error_code": err["code"],
-                    "error_message": err["message"],
-                    "status_code": err["status_code"],
-                }
-
-        if self._is_followup_query(query, session) and session.last_filters:
-            logger.info(f"检测到追问，沿用上次过滤条件：{session.last_filters}")
-            filters = self._sanitize_filters(session.last_filters)
-        else:
-            parsed_filters = await self.query_parser.parse(query)
-            filters = self._sanitize_filters(parsed_filters)
-            session.last_filters = filters if filters.has_filters() else None
-            session.last_query_time = datetime.now()
-        
-        projects = await self.retrieve_projects(query, top_k, filters=filters)
-
-        if not projects:
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": self.NO_MATCH_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"用户问题：{query}\n\n请回答用户的问题，并告知数据库中没有找到相关的 GitHub Trending 项目。"}
-                    ],
-                    temperature=0.7,
-                    max_tokens=800,
-                    timeout=self.request_timeout,
-                )
-                return {
-                    "answer": response.choices[0].message.content,
-                    "projects": [],
-                    "success": True,
-                    "session_id": session.session_id
-                }
-            except Exception as e:
-                err = self._classify_chat_error(e)
-                return {
-                    "answer": err["message"],
-                    "projects": [],
-                    "success": False,
-                    "session_id": session.session_id,
-                    "error_code": err["code"],
-                    "error_message": err["message"],
-                    "status_code": err["status_code"],
-                }
-
-        retrieval_confidence = self._compute_retrieval_confidence(projects)
-        if retrieval_confidence < self.min_confidence:
-            answer = self._build_low_confidence_answer(query, projects, retrieval_confidence)
-            session.add_to_history(query, answer, [
-                {
-                    "repo_full_name": p.repo_full_name,
-                    "summary": p.summary,
-                    "similarity": p.similarity
-                }
-                for p in projects
-            ])
-            session.query_count += 1
-            return {
-                "answer": answer,
-                "projects": [
-                    {
-                        "repo_full_name": p.repo_full_name,
-                        "summary": p.summary,
-                        "similarity": round(p.similarity * 100, 1),
-                        "language": p.language,
-                        "stars": p.stars,
-                        "url": p.url
-                    }
-                    for p in projects
-                ],
-                "success": True,
-                "session_id": session.session_id
-            }
-
-        projects_context = self._format_projects_context(projects)
-        prompt = self.RAG_PROMPT_TEMPLATE.format(
-            query=query,
-            projects_context=projects_context
-        )
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000,
-                timeout=self.request_timeout,
-            )
-
-            answer = response.choices[0].message.content
-            if not self._has_citations(answer):
-                answer += self._build_source_appendix(projects)
-
-            session.add_to_history(query, answer, [
-                {
-                    "repo_full_name": p.repo_full_name,
-                    "summary": p.summary,
-                    "similarity": p.similarity
-                }
-                for p in projects
-            ])
-            session.query_count += 1
-
-            return {
-                "answer": answer,
-                "projects": [
-                    {
-                        "repo_full_name": p.repo_full_name,
-                        "summary": p.summary,
-                        "similarity": round(p.similarity * 100, 1),
-                        "language": p.language,
-                        "stars": p.stars,
-                        "url": p.url
-                    }
-                    for p in projects
-                ],
-                "success": True,
-                "session_id": session.session_id
-            }
-
-        except Exception as e:
-            err = self._classify_chat_error(e)
-            logger.error(f"LLM 生成失败 code={err['code']} error={str(e)}")
-            return {
-                "answer": err["message"],
-                "projects": [],
-                "success": False,
-                "session_id": session.session_id,
-                "error_code": err["code"],
-                "error_message": err["message"],
-                "status_code": err["status_code"],
-            }
