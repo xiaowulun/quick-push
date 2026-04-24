@@ -4,6 +4,10 @@
 
 OpenScout 是一个面向开发者的开源项目发现与决策助手。
 它不是单纯的 GitHub Trending 可视化页面，也不是单纯的 RAG Demo，而是一个把开源发现、项目理解、检索问答和决策支持串起来的 AI-native 工具。
+![alt text](imgs/image.png)
+
+![alt text](imgs/image-1.png)
+
 
 它把零散的 GitHub Trending 信息，整理成可搜索、可理解、可问答的项目洞察，帮助你更快完成技术筛选、趋势跟踪和项目探索。
 
