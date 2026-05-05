@@ -131,7 +131,7 @@ class ScoutAgent(BaseAgent):
 
 ## 讨论统计
 - 总提及: {total_mentions}
-- HN: {hn_count} | Reddit: {reddit_count} | GitHub: {github_count}
+- HN: {hn_count} | GitHub: {github_count}
 - 情感: 正面{positive} 中性{neutral} 负面{negative}
 
 ---
@@ -179,7 +179,6 @@ class ScoutAgent(BaseAgent):
             "external_discussions": discussions_text,
             "total_mentions": search_results.get("total_mentions", 0),
             "hn_count": search_results.get("sources", {}).get("hackernews", 0),
-            "reddit_count": search_results.get("sources", {}).get("reddit", 0),
             "github_count": search_results.get("sources", {}).get("github_discussions", 0),
             "positive": sentiment.get("positive", 0),
             "neutral": sentiment.get("neutral", 0),

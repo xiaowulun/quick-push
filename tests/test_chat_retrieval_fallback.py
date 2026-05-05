@@ -79,7 +79,7 @@ class _DummySessionManager:
         return self._session
 
 
-def _build_chat_service_for_low_conf_tests(llm_answer: str):
+def _build_chat_service_for_low_conf_tests(llm_answer: str, sample_similarity: float = 0.0):
     service = object.__new__(RAGChatService)
     service.min_confidence = 0.42
     service.config = SimpleNamespace(
@@ -107,7 +107,7 @@ def _build_chat_service_for_low_conf_tests(llm_answer: str):
         repo_full_name="owner/repo",
         summary="sample summary",
         reasons=["sample reason"],
-        similarity=0.0,
+        similarity=sample_similarity,
         language="Python",
         stars=123,
         url="https://github.com/owner/repo",
@@ -235,3 +235,26 @@ def test_chat_model_fallback_when_primary_model_missing():
 
     assert result["used_model"] == "Pro/MiniMaxAI/MiniMax-M2.5"
     assert fake.calls == ["bad-model", "Pro/MiniMaxAI/MiniMax-M2.5"]
+
+
+def test_chat_stream_emits_recommendation_basis_event():
+    service = _build_chat_service_for_low_conf_tests(llm_answer="[S1] 推荐这个项目", sample_similarity=0.95)
+
+    class _ParserWithFilters:
+        async def parse(self, _query):
+            return QueryFilters(language="Python", keywords=["agent"])
+
+    service.query_parser = _ParserWithFilters()
+
+    chunks = []
+    async def _collect():
+        async for chunk in service.chat_stream("推荐一个 Python agent 项目"):
+            chunks.append(chunk)
+    asyncio.run(_collect())
+
+    basis_chunks = [chunk for chunk in chunks if chunk.get("type") == "recommendation_basis"]
+    assert len(basis_chunks) == 1
+    basis = basis_chunks[0]["basis"]
+    assert basis["filters"]["language"] == "Python"
+    assert "agent" in basis["filters"]["keywords"]
+    assert any("Query Parser" in text for text in basis["global_reasons"])

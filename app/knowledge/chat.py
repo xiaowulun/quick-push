@@ -13,7 +13,7 @@ import logging
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -44,6 +44,10 @@ class RetrievedProject:
     evidence_path: Optional[str] = None
     evidence_heading: Optional[str] = None
     evidence_chunk: Optional[str] = None
+    keywords: List[str] = field(default_factory=list)
+    tech_stack: List[str] = field(default_factory=list)
+    use_cases: List[str] = field(default_factory=list)
+    match_reasons: List[str] = field(default_factory=list)
 
 
 class RAGChatService:
@@ -73,10 +77,14 @@ class RAGChatService:
 ## 用户问题
 {query}
 
+## 推荐依据
+{recommendation_basis}
+
 ## 检索结果
 {projects_context}
 
 请用中文回答，并区分“基于检索结果的信息”和“补充建议”。
+优先使用“推荐依据”和“检索结果”中的结构化特征（语言/类别/stars/关键词命中）来解释推荐，不要给空泛理由。
 格式要求：输出纯文本分点，不使用 Markdown 标题（# / ##）和表格，首行不要空行。"""
 
     TECHNICAL_KEYWORDS = [
@@ -534,6 +542,10 @@ class RAGChatService:
                     evidence_path=item.get("path") or "README.md",
                     evidence_heading=item.get("heading") or item.get("evidence_section"),
                     evidence_chunk=item.get("evidence_chunk"),
+                    keywords=item.get("keywords", []) or [],
+                    tech_stack=item.get("tech_stack", []) or [],
+                    use_cases=item.get("use_cases", []) or [],
+                    match_reasons=item.get("match_reasons", []) or [],
                 )
                 retrieved.append(project)
 
@@ -564,7 +576,94 @@ class RAGChatService:
         logger.info("过滤条件检索为空，回退无过滤重试: query=%s filters=%s", query, filters.model_dump())
         return await self.retrieve_projects(query, top_k, filters=None)
 
-    def _format_projects_context(self, projects: List[RetrievedProject]) -> str:
+    @staticmethod
+    def _compose_project_match_reasons(project: RetrievedProject, filters: Optional[QueryFilters]) -> List[str]:
+        reasons: List[str] = []
+        if project.match_reasons:
+            reasons.extend([str(x).strip() for x in project.match_reasons if str(x).strip()])
+
+        if filters:
+            if filters.language and project.language and project.language.lower() == filters.language.lower():
+                reasons.append(f"命中语言偏好：{project.language}")
+            if filters.category and project.category == filters.category:
+                reasons.append(f"命中类别偏好：{project.category}")
+            if filters.min_stars is not None and (project.stars or 0) >= filters.min_stars:
+                reasons.append(f"满足最低 stars：{project.stars} >= {filters.min_stars}")
+            if filters.keywords:
+                blob = " ".join(
+                    [
+                        project.repo_full_name.lower(),
+                        (project.summary or "").lower(),
+                        " ".join([str(x) for x in project.reasons]).lower(),
+                        " ".join([str(x) for x in project.keywords]).lower(),
+                        " ".join([str(x) for x in project.tech_stack]).lower(),
+                        " ".join([str(x) for x in project.use_cases]).lower(),
+                    ]
+                )
+                hits = [kw for kw in filters.keywords if kw and str(kw).lower() in blob][:3]
+                if hits:
+                    reasons.append("命中关键词：" + "、".join(hits))
+
+        deduped: List[str] = []
+        seen = set()
+        for item in reasons:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+            if len(deduped) >= 6:
+                break
+        return deduped
+
+    def _build_recommendation_basis(
+        self,
+        *,
+        query: str,
+        filters: Optional[QueryFilters],
+        projects: List[RetrievedProject],
+        retrieval_confidence: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        filter_lines = filters.to_explanation_lines() if filters else []
+        global_reasons: List[str] = []
+        if filter_lines:
+            global_reasons.append("Query Parser 识别条件：" + "；".join(filter_lines))
+        else:
+            global_reasons.append("Query Parser 未识别明确过滤条件，主要依据语义相关性排序。")
+        if retrieval_confidence is not None:
+            global_reasons.append(f"检索置信度：{retrieval_confidence:.2f}")
+
+        project_reasons: List[Dict[str, Any]] = []
+        for project in projects[:5]:
+            reasons = self._compose_project_match_reasons(project, filters)
+            project_reasons.append(
+                {
+                    "repo_full_name": project.repo_full_name,
+                    "reasons": reasons[:4],
+                }
+            )
+        return {
+            "query": query,
+            "filters": filters.to_active_filter_dict() if filters else {},
+            "global_reasons": global_reasons,
+            "project_reasons": project_reasons,
+        }
+
+    @staticmethod
+    def _format_recommendation_basis_text(basis: Dict[str, Any]) -> str:
+        if not basis:
+            return "无"
+        lines: List[str] = []
+        for item in basis.get("global_reasons", []) or []:
+            lines.append(f"- {item}")
+        for row in basis.get("project_reasons", []) or []:
+            repo = row.get("repo_full_name")
+            reasons = row.get("reasons") or []
+            if repo and reasons:
+                lines.append(f"- {repo}: " + "；".join([str(x) for x in reasons[:3]]))
+        return "\n".join(lines) if lines else "无"
+
+    def _format_projects_context(self, projects: List[RetrievedProject], filters: Optional[QueryFilters] = None) -> str:
         """格式化项目信息为上下文。"""
         if not projects:
             return "未找到相关项目。"
@@ -578,6 +677,9 @@ class RAGChatService:
             snippet = (project.evidence_chunk or "").strip()
             if len(snippet) > 220:
                 snippet = snippet[:220] + "..."
+            match_reasons = self._compose_project_match_reasons(project, filters)[:4]
+            if not match_reasons:
+                match_reasons = ["semantic recall hit"]
 
             project_info = f"""### [{source_id}] 项目 {i}: {project.repo_full_name}
 - 语言：{lang_str}
@@ -585,6 +687,8 @@ class RAGChatService:
 - 分类：{project.category or '未分类'}
 - 项目简介：{project.summary}
 - 证据位置：{project.evidence_path or 'README.md'} / {heading}
+- 推荐依据：
+{chr(10).join(f'  - {r}' for r in match_reasons)}
 - 核心特点:
 {chr(10).join(f'  - {r}' for r in project.reasons)}
 - 证据片段：{snippet or '（无）'}
@@ -757,6 +861,12 @@ class RAGChatService:
         retrieval_confidence = self._compute_retrieval_confidence(projects)
         low_confidence_hit = retrieval_confidence < self.min_confidence
         allow_soft_answer = low_confidence_hit and self._is_planning_query(query)
+        basis = self._build_recommendation_basis(
+            query=query,
+            filters=filters,
+            projects=projects,
+            retrieval_confidence=retrieval_confidence,
+        )
         if low_confidence_hit and not allow_soft_answer:
             low_conf_answer = self._build_low_confidence_answer(query, projects, retrieval_confidence)
             yield {
@@ -781,6 +891,11 @@ class RAGChatService:
         }
 
         yield {
+            "type": "recommendation_basis",
+            "basis": basis,
+        }
+
+        yield {
             "type": "projects",
             "projects": [
                 {
@@ -789,15 +904,17 @@ class RAGChatService:
                     "similarity": round(p.similarity * 100, 1),
                     "language": p.language,
                     "stars": p.stars,
-                    "url": p.url
+                    "url": p.url,
+                    "match_reasons": self._compose_project_match_reasons(p, filters)[:4],
                 }
                 for p in projects
             ]
         }
 
-        projects_context = self._format_projects_context(projects)
+        projects_context = self._format_projects_context(projects, filters=filters)
         prompt = self.RAG_PROMPT_TEMPLATE.format(
             query=query,
+            recommendation_basis=self._format_recommendation_basis_text(basis),
             projects_context=projects_context
         )
 

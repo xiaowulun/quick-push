@@ -12,9 +12,9 @@ jobs:
   run-and-push:
     runs-on: ubuntu-latest
     
-    # 【关键配置】赋予 Action 修改和推送代码的权限（为了保存数据库）
+    # 最小权限：仅需读取仓库代码
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: 检出代码
@@ -45,9 +45,3 @@ jobs:
           SQLITE_DB_PATH: data/sqlite/analysis_cache.db
           CHROMA_PERSIST_DIR: data/chroma
         run: python main.py
-
-      - name: 保存 SQLite 数据库并推回仓库
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update push history database"
-          file_pattern: "data/sqlite/analysis_cache.db" # 只提交主 SQLite 数据库

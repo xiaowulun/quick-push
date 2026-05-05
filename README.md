@@ -6,8 +6,7 @@ OpenScout 是一个面向开发者的开源项目发现与决策助手。
 它不是单纯的 GitHub Trending 可视化页面，也不是单纯的 RAG Demo，而是一个把开源发现、项目理解、检索问答和决策支持串起来的 AI-native 工具。
 ![alt text](imgs/image.png)
 
-![alt text](imgs/image-1.png)
-
+![alt text](imgs/image1.png)
 
 它把零散的 GitHub Trending 信息，整理成可搜索、可理解、可问答的项目洞察，帮助你更快完成技术筛选、趋势跟踪和项目探索。
 
@@ -124,7 +123,7 @@ OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://api.siliconflow.cn/v1
 ```
 
-可选配置（GitHub Token、飞书、模型路由、多模态开关、Reddit 检索等）请参考 `.env.example`。
+可选配置（GitHub Token、飞书、模型路由、多模态开关等）请参考 `.env.example`。
 其中 `GITHUB_TOKEN` 为可选，不配置也可运行（但更容易遇到限流）。
 
 ### 4. 运行数据管道（CLI） 🏃

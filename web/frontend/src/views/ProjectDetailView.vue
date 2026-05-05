@@ -114,6 +114,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Chart, registerables } from 'chart.js'
 import { useApi } from '@/composables/useApi'
+import { getCategoryLabel } from '@/constants/categories'
 
 Chart.register(...registerables)
 
@@ -124,13 +125,6 @@ const { fetchProjectDetail, loading, error } = useApi()
 const detail = ref(null)
 const trendChartRef = ref(null)
 let trendChart = null
-
-const categoryMap = {
-  ai_ecosystem: 'AI生态',
-  infra_and_tools: '开发工具',
-  product_and_ui: '产品与UI',
-  knowledge_base: '知识库'
-}
 
 const repoFullName = computed(() => {
   const raw = String(route.params.repoFullName || '')
@@ -198,8 +192,7 @@ function formatDate(value) {
 }
 
 function categoryDisplay(value) {
-  const key = String(value || '')
-  return categoryMap[key] || key || '未分类'
+  return getCategoryLabel(value)
 }
 
 function goBack() {

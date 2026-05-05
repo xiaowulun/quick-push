@@ -281,6 +281,7 @@ def derive_project_profile(
     trend_summary: Dict[str, Any],
     basic: Dict[str, Any],
     evidence_text: str = "",
+    allow_llm: bool = True,
 ) -> Dict[str, Any]:
     """Infer project profile, with optional LLM enhancement and deterministic fallback."""
     rule_profile = _derive_project_profile_rule(
@@ -293,16 +294,18 @@ def derive_project_profile(
         basic=basic,
     )
 
-    llm_profile = _derive_profile_with_llm(
-        summary=summary,
-        reasons=reasons,
-        keywords=keywords,
-        tech_stack=tech_stack,
-        use_cases=use_cases,
-        trend_summary=trend_summary,
-        basic=basic,
-        evidence_text=evidence_text,
-    )
+    llm_profile = None
+    if allow_llm:
+        llm_profile = _derive_profile_with_llm(
+            summary=summary,
+            reasons=reasons,
+            keywords=keywords,
+            tech_stack=tech_stack,
+            use_cases=use_cases,
+            trend_summary=trend_summary,
+            basic=basic,
+            evidence_text=evidence_text,
+        )
     if not llm_profile:
         return rule_profile
 
@@ -822,6 +825,11 @@ class SearchService:
                 result.pop("embedding", None)
                 result.pop("vector_score", None)
                 result.pop("bm25_score", None)
+                result["match_reasons"] = self._build_match_reasons(
+                    query=query,
+                    result=result,
+                    filters=filters,
+                )
 
             return repo_results
 
@@ -1075,6 +1083,62 @@ class SearchService:
             filtered.append(item)
 
         return filtered
+
+    def _build_match_reasons(self, query: str, result: Dict, filters: Optional[Any]) -> List[str]:
+        """Assemble deterministic match reasons from retrieval features and parsed filters."""
+        reasons: List[str] = []
+        repo_name = str(result.get("repo_full_name") or "").strip()
+        language = str(result.get("language") or "").strip()
+        category = str(result.get("category") or "").strip()
+        stars = int(result.get("stars") or 0)
+        score = float(result.get("rerank_score") or result.get("similarity") or 0.0)
+
+        if score:
+            reasons.append(f"语义相关度较高（score={score:.3f}）")
+        if language:
+            reasons.append(f"语言特征：{language}")
+        if category:
+            reasons.append(f"类别特征：{category}")
+
+        if filters:
+            f_lang = str(getattr(filters, "language", "") or "").strip().lower()
+            f_category = str(getattr(filters, "category", "") or "").strip()
+            f_stars = getattr(filters, "min_stars", None)
+            f_keywords = [str(x).strip().lower() for x in (getattr(filters, "keywords", None) or []) if str(x).strip()]
+
+            if f_lang and language.lower() == f_lang:
+                reasons.append(f"命中语言过滤：{language}")
+            if f_category and category == f_category:
+                reasons.append(f"命中类别过滤：{category}")
+            if isinstance(f_stars, int) and f_stars > 0 and stars >= f_stars:
+                reasons.append(f"满足热度门槛：{stars} >= {f_stars}")
+
+            if f_keywords:
+                summary = str(result.get("summary") or "").lower()
+                reason_text = " ".join([str(x) for x in (result.get("reasons") or [])]).lower()
+                keywords_text = " ".join([str(x) for x in (result.get("keywords") or [])]).lower()
+                tech_text = " ".join([str(x) for x in (result.get("tech_stack") or [])]).lower()
+                use_cases_text = " ".join([str(x) for x in (result.get("use_cases") or [])]).lower()
+                search_blob = " ".join([repo_name.lower(), summary, reason_text, keywords_text, tech_text, use_cases_text])
+                hit_keywords = [kw for kw in f_keywords if kw and kw in search_blob][:3]
+                if hit_keywords:
+                    reasons.append("命中关键词：" + "、".join(hit_keywords))
+
+        source_reasons = [str(x).strip() for x in (result.get("reasons") or []) if str(x).strip()]
+        for src in source_reasons[:2]:
+            reasons.append(f"检索证据：{src}")
+
+        deduped: List[str] = []
+        seen = set()
+        for item in reasons:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+            if len(deduped) >= 6:
+                break
+        return deduped
 
     async def reindex_all_projects(self) -> Dict[str, int]:
         """重新索引所有项目"""

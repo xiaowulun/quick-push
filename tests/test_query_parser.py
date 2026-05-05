@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 
 from app.knowledge.query_parser import QueryFilters, QueryParser
 
@@ -12,10 +12,10 @@ def _build_parser_for_unit_test() -> QueryParser:
     return parser
 
 
-def test_parse_stars_from_text_supports_cn_units():
-    assert QueryParser._parse_stars_from_text("至少 1.2k stars") == 1200
-    assert QueryParser._parse_stars_from_text("至少 2万 star") == 20000
-    assert QueryParser._parse_stars_from_text("至少 3千 stars") == 3000
+def test_parse_stars_from_text_supports_units():
+    assert QueryParser._parse_stars_from_text("top 1.2k stars") == 1200
+    assert QueryParser._parse_stars_from_text("top 2w star") == 20000
+    assert QueryParser._parse_stars_from_text("top 3q stars") == 3000
 
 
 def test_invoke_chain_with_retry_retries_timeout_then_success():
@@ -36,7 +36,7 @@ def test_invoke_chain_with_retry_retries_timeout_then_success():
         parser._invoke_chain_with_retry(
             chain=chain,
             payload={"query": "ok"},
-            stage="测试",
+            stage="unit-test",
             retries=3,
         )
     )
@@ -58,7 +58,7 @@ def test_parse_uses_fallback_after_primary_timeout():
     parser._fallback_parse = _fallback_parse
     parser._heuristic_parse = lambda _query: QueryFilters()
 
-    result = asyncio.run(parser.parse("推荐一些 Python 项目"))
+    result = asyncio.run(parser.parse("recommend Python projects"))
     assert result.language == "Python"
 
 
@@ -75,5 +75,32 @@ def test_parse_uses_heuristic_when_fallback_has_no_filters():
     parser._fallback_parse = _fallback_parse
     parser._heuristic_parse = lambda _query: QueryFilters(category="knowledge_base")
 
-    result = asyncio.run(parser.parse("推荐一些学习路线"))
+    result = asyncio.run(parser.parse("recommend docs projects"))
     assert result.category == "knowledge_base"
+
+
+def test_query_filters_explanation_lines():
+    filters = QueryFilters(
+        language="Python",
+        category="ai_ecosystem",
+        days=7,
+        min_stars=500,
+        keywords=["agent", "workflow"],
+    )
+
+    lines = filters.to_explanation_lines()
+
+    assert any("Python" in line for line in lines)
+    assert any("ai_ecosystem" in line for line in lines)
+    assert any("7" in line for line in lines)
+    assert any("500" in line for line in lines)
+    assert any("agent" in line and "workflow" in line for line in lines)
+
+
+def test_extract_keywords_reuses_heuristic_rules():
+    parser = _build_parser_for_unit_test()
+    keywords = parser.extract_keywords("owner/mega-agent RAG workflow automation Python", limit=4)
+
+    lowered = {k.lower() for k in keywords}
+    assert "workflow" in lowered or "automation" in lowered
+    assert "python" not in lowered

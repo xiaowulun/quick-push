@@ -46,9 +46,8 @@ node_modules
 .chroma_db/
 data/chroma/
 
-# SQLite (only keep canonical file in git)
+# SQLite runtime data (do not track)
 data/sqlite/*.db
-!data/sqlite/analysis_cache.db
 
 # OS
 .DS_Store
@@ -69,3 +68,5 @@ htmlcov/
 
 .scripts/
 .docs/
+
+

@@ -1,55 +1,50 @@
-"""
-Editor Agent - 编辑审查
+﻿"""Editor Agent - merge scout and analyst outputs into a final report."""
 
-负责整合 Scout（趋势情报）和 Analyst（技术深度）的结果，生成最终推送报告。
-"""
-
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Tuple
 import logging
 
-from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
-from app.analysis.agents.base import BaseAgent, AgentResult
+from app.analysis.agents.base import AgentResult, BaseAgent
 from app.infrastructure.config import get_config
 
 logger = logging.getLogger(__name__)
 
 
 class FinalReport(BaseModel):
-    """最终分析报告"""
-    summary: str = Field(description="项目分析：深层次探究项目的用处、价值、可行性，100-150字")
-    reasons: List[str] = Field(description="爆火原因：结合当下热点评估，3-5条，每条最多40字")
+    """Final concise report returned by Editor."""
+
+    summary: str = Field(
+        description=(
+            "Deep project summary in about 100-150 Chinese characters, "
+            "covering value, problem fit, and feasibility."
+        )
+    )
+    reasons: List[str] = Field(
+        description=(
+            "3-5 concrete reasons for popularity/adoption, each <= 40 Chinese characters."
+        )
+    )
 
 
 class EditorAgent(BaseAgent):
-    """编辑审查 Agent"""
+    """Editor review agent."""
 
     def __init__(self):
-        super().__init__("EditorAgent", "编辑审查 Agent")
+        super().__init__("EditorAgent", "Editor review agent")
         config = get_config()
         self.llm = ChatOpenAI(
             api_key=config.openai.api_key,
             base_url=config.openai.base_url,
             model_name=config.openai.model_pro,
-            temperature=0.3
+            temperature=0.3,
         )
 
     async def execute(self, context: Dict[str, Any]) -> AgentResult:
-        """
-        整合 Scout 和 Analyst 的结果，生成最终报告
-
-        Args:
-            context: {
-                "repo_name": str,
-                "description": str,
-                "scout_result": AgentResult,
-                "analyst_result": AgentResult,
-                "category": str,
-            }
-        """
+        """Merge scout and analyst results and generate final report."""
         self.log_start(context)
 
         try:
@@ -59,42 +54,54 @@ class EditorAgent(BaseAgent):
             analyst_result = context.get("analyst_result", {})
             category = context.get("category", "")
 
-            # 1. 数据预处理
-            scout_data = scout_result if scout_result else {}
-            analyst_data = analyst_result if analyst_result else {}
+            # Normalize payload shapes for backward compatibility.
+            scout_data, inferred_scout_success = self._normalize_agent_payload(scout_result)
+            analyst_data, inferred_analyst_success = self._normalize_agent_payload(analyst_result)
+            scout_success = bool(context.get("scout_success", inferred_scout_success))
+            analyst_success = bool(context.get("analyst_success", inferred_analyst_success))
 
-            # 2. 使用 LLM 生成最终报告
             final_report = await self._generate_report(
                 repo_name=repo_name,
                 description=description,
                 category=category,
                 scout_data=scout_data,
-                analyst_data=analyst_data
+                analyst_data=analyst_data,
             )
 
             result_data = {
                 "report": final_report.model_dump(),
                 "data_sources": {
-                    "scout_success": scout_result.get("success", False),
-                    "analyst_success": analyst_result.get("success", False),
+                    "scout_success": scout_success,
+                    "analyst_success": analyst_success,
                 },
                 "generated_at": datetime.now().isoformat(),
             }
 
             result = self.create_success_result(
                 data=result_data,
-                metadata={
-                    "repo_name": repo_name,
-                }
+                metadata={"repo_name": repo_name},
             )
-
             self.log_end(result)
             return result
 
         except Exception as e:
-            error_msg = f"编辑审查失败: {str(e)}"
+            error_msg = f"editor review failed: {e}"
             logger.error(error_msg)
             return self.create_error_result(error_msg)
+
+    @staticmethod
+    def _normalize_agent_payload(payload: Any) -> Tuple[Dict[str, Any], bool]:
+        # New path: payload is raw data dict, success comes from explicit flags.
+        # Legacy path: payload may look like {"success": bool, "data": {...}}.
+        if isinstance(payload, dict) and "data" in payload and isinstance(payload.get("data"), dict):
+            success = bool(payload.get("success", False))
+            data = payload.get("data") or {}
+            return (data if success else {}), success
+
+        if isinstance(payload, dict):
+            return payload, bool(payload)
+
+        return {}, False
 
     async def _generate_report(
         self,
@@ -102,60 +109,64 @@ class EditorAgent(BaseAgent):
         description: str,
         category: str,
         scout_data: Dict,
-        analyst_data: Dict
+        analyst_data: Dict,
     ) -> FinalReport:
-        """使用 LLM 整合 Scout 和 Analyst 的分析结果"""
+        """Use LLM to synthesize scout + analyst outputs."""
 
         materials = self._build_analysis_materials(scout_data, analyst_data)
 
-        prompt_template = """你是一位资深技术编辑，需要整合以下调研资料，生成面向用户的简洁报告。
+        prompt_template = """You are a senior technical editor.
+You need to integrate the following research materials and produce a concise user-facing report.
 
-项目: {repo_name}
-描述: {description}
+Project: {repo_name}
+Description: {description}
+Category: {category}
 
 {materials}
 
-直接返回 JSON，不要其他内容：
-{{"summary": "项目分析（100-150字，深层次探究项目的用处、价值、可行性）", "reasons": ["爆火原因1", "爆火原因2", "爆火原因3"]}}
+Return JSON only:
+{{"summary": "...", "reasons": ["...", "...", "..."]}}
 
-注意：
-- summary 要深入分析项目的核心价值、解决什么问题、技术可行性如何
-- reasons 每条≤40字，结合当下技术热点，写具体事实（如"免费替代XX工具"、"踩中AI编程趋势"）
-- 不要写套话，要有实质性内容
+Requirements:
+- summary: about 100-150 Chinese characters, include value, problem fit, feasibility.
+- reasons: 3-5 items, each <= 40 Chinese characters, concrete and specific.
+- avoid generic filler text.
 """
 
         prompt = ChatPromptTemplate.from_template(prompt_template)
         chain = prompt | self.llm.with_structured_output(FinalReport)
 
-        result = await chain.ainvoke({
-            "repo_name": repo_name,
-            "description": description or "暂无描述",
-            "materials": materials,
-        })
-
+        result = await chain.ainvoke(
+            {
+                "repo_name": repo_name,
+                "description": description or "no description",
+                "category": category or "",
+                "materials": materials,
+            }
+        )
         return result
 
     def _build_analysis_materials(self, scout_data: Dict, analyst_data: Dict) -> str:
-        """整合 Scout 和 Analyst 的信息，生成完整的调研资料"""
+        """Build compact text materials from scout and analyst outputs."""
 
-        sections = []
+        sections: List[str] = []
 
         if scout_data:
-            parts = ["【市场分析】"]
+            parts = ["[Market Analysis]"]
 
             popularity = scout_data.get("popularity_analysis", [])
             if popularity:
-                parts.append("爆火因素:")
-                for p in popularity[:5]:
-                    parts.append(f"  • {p}")
+                parts.append("Popularity Drivers:")
+                for item in popularity[:5]:
+                    parts.append(f"- {item}")
 
             trend = scout_data.get("trend_alignment", "")
             if trend:
-                parts.append(f"技术趋势: {trend}")
+                parts.append(f"Trend Alignment: {trend}")
 
             advantage = scout_data.get("competitive_advantage", "")
             if advantage:
-                parts.append(f"竞争优势: {advantage}")
+                parts.append(f"Competitive Advantage: {advantage}")
 
             sentiment = scout_data.get("community_sentiment", {})
             if sentiment:
@@ -163,55 +174,55 @@ class EditorAgent(BaseAgent):
                 atmosphere = sentiment.get("atmosphere", "")
                 topics = sentiment.get("key_topics", [])
                 if heat and heat != "unknown":
-                    parts.append(f"社区热度: {heat} ({atmosphere})")
+                    parts.append(f"Community Heat: {heat} ({atmosphere})")
                 if topics:
-                    parts.append(f"讨论话题: {', '.join(topics)}")
+                    parts.append(f"Discussion Topics: {', '.join(topics)}")
 
             concerns = scout_data.get("potential_concerns", [])
             if concerns:
-                parts.append(f"潜在风险: {'; '.join(concerns)}")
+                parts.append(f"Potential Risks: {'; '.join(concerns)}")
 
             sections.append("\n".join(parts))
 
         if analyst_data:
             tech_review = analyst_data.get("tech_review", analyst_data)
             if tech_review:
-                parts = ["【技术分析】"]
+                parts = ["[Technical Analysis]"]
 
                 runnability = tech_review.get("runnability", {})
                 if runnability:
                     diff = runnability.get("difficulty", "")
                     assessment = runnability.get("assessment", "")
                     missing = runnability.get("missing_configs", [])
-                    parts.append(f"部署难度: {diff}")
+                    parts.append(f"Deployment Difficulty: {diff}")
                     if assessment:
-                        parts.append(f"  评价: {assessment}")
+                        parts.append(f"Assessment: {assessment}")
                     if missing:
-                        parts.append(f"  缺失配置: {', '.join(missing[:3])}")
+                        parts.append(f"Missing Configs: {', '.join(missing[:3])}")
 
                 structure = tech_review.get("code_structure", {})
                 if structure:
                     level = structure.get("engineering_level", "")
                     assessment = structure.get("assessment", "")
-                    parts.append(f"工程水平: {level}")
+                    parts.append(f"Engineering Level: {level}")
                     if assessment:
-                        parts.append(f"  评价: {assessment}")
+                        parts.append(f"Assessment: {assessment}")
 
                 issues = tech_review.get("issue_analysis", {})
                 if issues:
                     bug_density = issues.get("bug_density", "")
                     warning = issues.get("critical_warning", "")
                     active = issues.get("author_active", None)
-                    parts.append(f"Bug密度: {bug_density}")
-                    if warning and warning != "无":
-                        parts.append(f"  严重警告: {warning}")
+                    parts.append(f"Bug Density: {bug_density}")
+                    if warning and warning != "none":
+                        parts.append(f"Critical Warning: {warning}")
                     if active is not None:
-                        parts.append(f"作者活跃: {'是' if active else '否'}")
+                        parts.append(f"Maintainer Active: {'yes' if active else 'no'}")
 
                 sections.append("\n".join(parts))
 
         if not sections:
-            return "（仅有项目描述可用）"
+            return "(Only repository description available)"
 
         result = "\n\n".join(sections)
         if len(result) > 800:

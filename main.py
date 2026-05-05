@@ -80,9 +80,18 @@ def run(language: str = "", since: str = "daily", limit: int = 10, notify: bool 
     logger.info(f"分析完成，成功 {len(success_messages)} 个，失败 {len(failure_repos)} 个")
 
     classification_started = perf_counter()
-    _save_trending_data(repos, since)
+    save_stats = _save_trending_data(repos, since)
     classification_elapsed = perf_counter() - classification_started
     logger.info(f"分类与趋势入库完成，耗时 {classification_elapsed:.2f}s")
+
+    # Data quality gate: daily view must have fresh same-day rows.
+    if since == "daily":
+        min_daily_records = max(1, int(os.getenv("TRENDING_MIN_RECORDS_DAILY", "1")))
+        today_count = int((save_stats or {}).get("today_since_count") or 0)
+        if today_count < min_daily_records:
+            raise RuntimeError(
+                f"日数据校验失败：当日 daily 记录数 {today_count} < 期望最小值 {min_daily_records}"
+            )
 
     mode = "feishu" if notify else "print"
     notifier = Notifier(mode=mode)
@@ -144,9 +153,25 @@ def _save_trending_data(repos, since_type: str):
                 category=category
             )
 
-        logger.info(f"已保存 {len(repos)} 条趋势记录")
+        today_since_count = len(
+            cache.get_trending_history(
+                start_date=today,
+                end_date=today,
+                since_type=since_type,
+            )
+        )
+        logger.info(
+            f"已保存 {len(repos)} 条趋势记录；{today.isoformat()} ({since_type}) 记录数: {today_since_count}"
+        )
+        return {
+            "saved_count": len(repos),
+            "today_since_count": today_since_count,
+            "record_date": today.isoformat(),
+            "since_type": since_type,
+        }
     except Exception as e:
         logger.error(f"保存趋势数据失败: {e}")
+        return {"saved_count": 0, "today_since_count": 0, "error": str(e), "since_type": since_type}
 
 
 def _is_failure_analysis(analysis: dict) -> bool:
@@ -160,7 +185,7 @@ def _is_failure_analysis(analysis: dict) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="GitHub 热门项目分析推送工具")
     parser.add_argument("--language", "-l", default="", help="编程语言筛选，如 python, javascript")
-    parser.add_argument("--since", "-s", default="weekly",
+    parser.add_argument("--since", "-s", default="daily",
                         choices=["daily", "weekly", "monthly"],
                         help="时间范围")
     parser.add_argument("--limit", "-n", type=int, default=10, help="获取数量")

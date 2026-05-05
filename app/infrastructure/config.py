@@ -93,13 +93,6 @@ class RetrievalConfig(BaseModel):
 class RAGChatConfig(BaseModel):
     max_tokens: int = Field(default=1200, description="RAG response max tokens")
 
-
-class RedditConfig(BaseModel):
-    cookie: Optional[str] = Field(default=None, description="Reddit cookie")
-    enabled: bool = Field(default=True, description="Enable Reddit retrieval")
-    timeout: int = Field(default=30, description="Playwright timeout (seconds)")
-
-
 class Config:
     openai: OpenAIConfig
     github: GitHubConfig
@@ -108,7 +101,6 @@ class Config:
     retrieval: RetrievalConfig
     rag_chat: RAGChatConfig
     multimodal: MultimodalConfig
-    reddit: RedditConfig
 
     def __init__(self):
         def _env(name: str, default: str = "") -> str:
@@ -158,11 +150,6 @@ class Config:
             max_chars=int(os.getenv("MULTIMODAL_MAX_CHARS", "3000")),
             max_images=int(os.getenv("MULTIMODAL_MAX_IMAGES", "3")),
             enable_multimodal=os.getenv("MULTIMODAL_ENABLE", "false").lower() == "true",
-        )
-        self.reddit = RedditConfig(
-            cookie=os.getenv("REDDIT_COOKIE"),
-            enabled=os.getenv("REDDIT_ENABLED", "true").lower() == "true",
-            timeout=int(os.getenv("REDDIT_TIMEOUT", "30")),
         )
 
     def validate(self) -> list[str]:

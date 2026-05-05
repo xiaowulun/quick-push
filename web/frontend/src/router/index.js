@@ -6,6 +6,11 @@ const routes = [
     redirect: '/chat'
   },
   {
+    path: '/discover',
+    name: 'Discover',
+    component: () => import('@/views/DiscoverView.vue')
+  },
+  {
     path: '/chat',
     name: 'Chat',
     component: () => import('@/views/ChatView.vue')

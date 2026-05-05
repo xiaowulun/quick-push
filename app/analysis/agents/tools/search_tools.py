@@ -1,23 +1,30 @@
 """
-搜索工具 - 获取项目的外部讨论和趋势信息
+Search tools for external/community signals.
 
-用于 Scout Agent 收集项目的"八卦"和社区热度
+Used by ScoutAgent to collect cross-source evidence.
 """
 
+from __future__ import annotations
+
 import asyncio
-import aiohttp
 import logging
-from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+import re
 from dataclasses import dataclass
-from urllib.parse import quote
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+
+try:
+    import aiohttp
+except Exception:  # pragma: no cover - optional dependency fallback
+    aiohttp = None  # type: ignore
+
+from app.knowledge.query_parser import QueryParser
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SearchResult:
-    """搜索结果"""
     source: str
     title: str
     url: str
@@ -29,20 +36,23 @@ class SearchResult:
 
 
 class HackerNewsSearcher:
-    """Hacker News 搜索"""
+    """Search recent HN stories through Algolia."""
 
     API_BASE = "https://hn.algolia.com/api/v1"
 
     async def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+        if aiohttp is None:
+            logger.warning("aiohttp is unavailable, skip HackerNews search")
+            return []
         try:
-            # trust_env=True: allow using HTTP(S)_PROXY from environment (common on Windows/VPN setups)
             async with aiohttp.ClientSession(trust_env=True) as session:
                 url = f"{self.API_BASE}/search"
                 params = {
                     "query": query,
                     "tags": "story",
-                    "numericFilters": "created_at_i>" + str(int((datetime.now() - timedelta(days=7)).timestamp())),
-                    "hitsPerPage": limit
+                    "numericFilters": "created_at_i>"
+                    + str(int((datetime.now() - timedelta(days=7)).timestamp())),
+                    "hitsPerPage": limit,
                 }
 
                 async with session.get(url, params=params, timeout=10) as response:
@@ -50,289 +60,49 @@ class HackerNewsSearcher:
                         return []
 
                     data = await response.json()
-                    results = []
+                    results: List[SearchResult] = []
 
                     for hit in data.get("hits", []):
-                        score = hit.get("points", 0) + hit.get("num_comments", 0) * 2
-
-                        raw_snippet = hit.get("story_text")
-                        snippet = raw_snippet[:200] if raw_snippet else f"[外部链接帖] 引发了 {hit.get('num_comments', 0)} 条社区讨论。"
-
-                        results.append(SearchResult(
-                            source="hackernews",
-                            title=hit.get("title", ""),
-                            url=hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}",
-                            snippet=snippet,
-                            score=score,
-                            created_at=datetime.fromtimestamp(hit.get("created_at_i", 0)),
-                            comments_count=hit.get("num_comments", 0),
-                            sentiment="neutral"
-                        ))
+                        score = int(hit.get("points", 0)) + int(hit.get("num_comments", 0)) * 2
+                        raw_snippet = hit.get("story_text") or ""
+                        snippet = (
+                            raw_snippet[:200]
+                            if raw_snippet
+                            else f"[external-link] {int(hit.get('num_comments', 0))} comments"
+                        )
+                        results.append(
+                            SearchResult(
+                                source="hackernews",
+                                title=hit.get("title", "") or "",
+                                url=hit.get("url")
+                                or f"https://news.ycombinator.com/item?id={hit.get('objectID')}",
+                                snippet=snippet,
+                                score=score,
+                                created_at=datetime.fromtimestamp(int(hit.get("created_at_i", 0) or 0)),
+                                comments_count=int(hit.get("num_comments", 0) or 0),
+                                sentiment="neutral",
+                            )
+                        )
 
                     return sorted(results, key=lambda x: x.score, reverse=True)
         except Exception as e:
-            logger.error(f"Hacker News 搜索失败: {e}")
+            logger.error("HackerNews search failed: %s", e)
             return []
-
-
-class RedditSearcher:
-    """Reddit 搜索 - 使用 Playwright 绕过 Cloudflare"""
-
-    def __init__(self):
-        from app.infrastructure.config import get_config
-        config = get_config()
-        self.cookie = config.reddit.cookie
-        self.enabled = config.reddit.enabled
-        self.timeout = config.reddit.timeout
-
-    async def search(self, query: str, limit: int = 10) -> List[SearchResult]:
-        if not self.enabled:
-            logger.debug("Reddit 搜索已禁用")
-            return []
-
-        if not self.cookie:
-            logger.warning("Reddit Cookie 未配置，跳过 Reddit 搜索")
-            return []
-
-        try:
-            return await self._search_with_playwright(query, limit)
-        except Exception as e:
-            logger.error(f"Reddit 搜索失败: {e}")
-            return []
-
-    async def _search_with_playwright(self, query: str, limit: int) -> List[SearchResult]:
-        from playwright.async_api import async_playwright
-
-        encoded_query = quote(query, safe='')
-        search_urls = [
-            f"https://www.reddit.com/search/?q={encoded_query}&sort=hot&t=week",
-            f"https://old.reddit.com/search/?q={encoded_query}&sort=relevance&t=week",
-        ]
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-
-            cookies = self._parse_cookie_string(self.cookie)
-            if cookies:
-                await context.add_cookies(cookies)
-
-            page = await context.new_page()
-            page.set_default_timeout(self.timeout * 1000)
-
-            aggregated_results = []
-            try:
-                for search_url in search_urls:
-                    try:
-                        await page.goto(search_url, wait_until="domcontentloaded")
-                        ready = await self._wait_reddit_ready(page)
-                        if not ready:
-                            logger.debug(f"Reddit 页面未找到预期元素: {search_url}")
-                            continue
-                        page_results = await self._extract_reddit_results(page, limit)
-                        if page_results:
-                            aggregated_results.extend(page_results)
-                            break
-                    except Exception as e:
-                        page_title = await page.title()
-                        logger.error(
-                            f"Playwright 访问 Reddit 失败: url={search_url} title={page_title} "
-                            f"error_type={type(e).__name__} error={e}"
-                        )
-            finally:
-                await browser.close()
-
-        if not aggregated_results:
-            return []
-
-        dedup = {}
-        for item in aggregated_results:
-            if item.url and item.url not in dedup:
-                dedup[item.url] = item
-
-        return list(dedup.values())[:limit]
-
-    async def _wait_reddit_ready(self, page) -> bool:
-        selectors = [
-            '[data-testid="search-results"]',
-            'article[data-testid="search-result-post"]',
-            'div.search-result',
-            'div.thing',
-            'div[data-testid="no-search-results"]',
-            'div.search-result-group',
-        ]
-
-        for selector in selectors:
-            try:
-                await page.wait_for_selector(selector, timeout=10000)
-                return True
-            except Exception:
-                continue
-
-        return False
-
-    async def _extract_reddit_results(self, page, limit: int) -> List[SearchResult]:
-        no_results = await page.query_selector('div[data-testid="no-search-results"]')
-        if no_results:
-            logger.debug("Reddit 搜索无结果")
-            return []
-
-        posts = await page.query_selector_all('article[data-testid="search-result-post"]')
-        if posts:
-            logger.debug(f"找到 {len(posts)} 个新 Reddit 帖子")
-            return await self._parse_new_reddit_posts(posts, limit)
-
-        posts = await page.query_selector_all('div.search-result, div.thing')
-        if posts:
-            logger.debug(f"找到 {len(posts)} 个旧 Reddit 帖子")
-            return await self._parse_old_reddit_posts(posts, limit)
-
-        posts = await page.query_selector_all('div[data-click-id="body"]')
-        if posts:
-            logger.debug(f"找到 {len(posts)} 个 Reddit 帖子 (body selector)")
-            return await self._parse_new_reddit_posts(posts, limit)
-
-        logger.debug("Reddit 页面未找到帖子元素")
-        return []
-
-    async def _parse_new_reddit_posts(self, posts, limit: int) -> List[SearchResult]:
-        results = []
-        for post in posts[:limit]:
-            try:
-                title_elem = await post.query_selector('h3')
-                title = await title_elem.inner_text() if title_elem else ""
-
-                link_elem = await post.query_selector('a[data-testid="post-title"]')
-                href = await link_elem.get_attribute('href') if link_elem else ""
-                if href and href.startswith('/'):
-                    href = f"https://www.reddit.com{href}"
-
-                subreddit_elem = await post.query_selector('a[data-testid="subreddit-link"]')
-                subreddit = ""
-                if subreddit_elem:
-                    subreddit_text = await subreddit_elem.inner_text()
-                    subreddit = subreddit_text.replace('r/', '').strip()
-
-                score_elem = await post.query_selector('[data-testid="post-score"]')
-                score_text = await score_elem.inner_text() if score_elem else "0"
-                score = self._parse_score(score_text)
-
-                comments_elem = await post.query_selector('a[data-click-id="comments"]')
-                comments_text = await comments_elem.inner_text() if comments_elem else "0"
-                comments = self._parse_comments(comments_text)
-
-                snippet_elem = await post.query_selector('div[data-testid="post-content"] p')
-                snippet = await snippet_elem.inner_text() if snippet_elem else ""
-                snippet = snippet[:200] if snippet else ""
-
-                if title and href:
-                    results.append(SearchResult(
-                        source=f"reddit/r/{subreddit}" if subreddit else "reddit",
-                        title=title,
-                        url=href,
-                        snippet=snippet,
-                        score=score + comments * 2,
-                        created_at=None,
-                        comments_count=comments,
-                        sentiment="neutral"
-                    ))
-            except Exception as e:
-                logger.debug(f"解析 Reddit 帖子失败: {e}")
-                continue
-        return results
-
-    async def _parse_old_reddit_posts(self, posts, limit: int) -> List[SearchResult]:
-        results = []
-        for post in posts[:limit]:
-            try:
-                title_elem = await post.query_selector('a.search-title, a.title')
-                title = await title_elem.inner_text() if title_elem else ""
-                href = await title_elem.get_attribute('href') if title_elem else ""
-                if href and href.startswith('/'):
-                    href = f"https://old.reddit.com{href}"
-
-                subreddit_elem = await post.query_selector('a.search-subreddit-link, a.subreddit')
-                subreddit = ""
-                if subreddit_elem:
-                    subreddit = (await subreddit_elem.inner_text()).replace('r/', '').strip()
-
-                snippet_elem = await post.query_selector('.search-expando, .search-result-body')
-                snippet = await snippet_elem.inner_text() if snippet_elem else ""
-                snippet = snippet[:200] if snippet else ""
-
-                comments_elem = await post.query_selector('a.search-comments, a.comments')
-                comments_text = await comments_elem.inner_text() if comments_elem else "0"
-                comments = self._parse_comments(comments_text)
-
-                score_elem = await post.query_selector('.search-score, .score.unvoted')
-                score_text = await score_elem.inner_text() if score_elem else "0"
-                score = self._parse_score(score_text)
-
-                if title and href:
-                    results.append(SearchResult(
-                        source=f"reddit/r/{subreddit}" if subreddit else "reddit",
-                        title=title,
-                        url=href,
-                        snippet=snippet,
-                        score=score + comments * 2,
-                        created_at=None,
-                        comments_count=comments,
-                        sentiment="neutral"
-                    ))
-            except Exception as e:
-                logger.debug(f"解析 old.reddit 帖子失败: {e}")
-                continue
-        return results
-
-    def _parse_cookie_string(self, cookie_string: str) -> List[Dict]:
-        if not cookie_string:
-            return []
-
-        cookies = []
-        for item in cookie_string.split(';'):
-            item = item.strip()
-            if '=' in item:
-                name, value = item.split('=', 1)
-                cookies.append({
-                    'name': name.strip(),
-                    'value': value.strip(),
-                    'domain': '.reddit.com',
-                    'path': '/'
-                })
-        return cookies
-
-    def _parse_score(self, text: str) -> int:
-        text = text.strip().lower().replace(',', '')
-        if 'k' in text:
-            return int(float(text.replace('k', '')) * 1000)
-        try:
-            return int(text)
-        except ValueError:
-            return 0
-
-    def _parse_comments(self, text: str) -> int:
-        text = text.strip().lower().replace(',', '')
-        text = text.replace('comments', '').replace('comment', '').strip()
-        if 'k' in text:
-            return int(float(text.replace('k', '')) * 1000)
-        try:
-            return int(text)
-        except ValueError:
-            return 0
 
 
 class GitHubDiscussionsSearcher:
-    """搜索 GitHub Discussions 和 Issues"""
+    """Search GitHub discussions via search/issues API."""
 
     async def search(self, repo_name: str, github_token: Optional[str] = None) -> List[SearchResult]:
-        """搜索项目的 Discussions"""
+        if aiohttp is None:
+            logger.warning("aiohttp is unavailable, skip GitHub discussions search")
+            return []
         try:
-            # trust_env=True: allow using HTTP(S)_PROXY from environment
             async with aiohttp.ClientSession(trust_env=True) as session:
-                url = f"https://api.github.com/search/issues"
+                url = "https://api.github.com/search/issues"
                 params = {
                     "q": f"repo:{repo_name} is:discussion sort:created-desc",
-                    "per_page": 10
+                    "per_page": 10,
                 }
                 headers = {"Accept": "application/vnd.github.v3+json"}
                 if github_token:
@@ -343,78 +113,270 @@ class GitHubDiscussionsSearcher:
                         return []
 
                     data = await response.json()
-                    results = []
-
+                    results: List[SearchResult] = []
                     for item in data.get("items", []):
-                        results.append(SearchResult(
-                            source="github_discussions",
-                            title=item.get("title", ""),
-                            url=item.get("html_url", ""),
-                            snippet=item.get("body", "")[:200],
-                            score=item.get("comments", 0) * 3,
-                            created_at=datetime.fromisoformat(item.get("created_at", "").replace("Z", "+00:00")),
-                            comments_count=item.get("comments", 0)
-                        ))
+                        created_raw = item.get("created_at", "") or ""
+                        created_at = None
+                        if created_raw:
+                            created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+                        results.append(
+                            SearchResult(
+                                source="github_discussions",
+                                title=item.get("title", "") or "",
+                                url=item.get("html_url", "") or "",
+                                snippet=(item.get("body", "") or "")[:200],
+                                score=int(item.get("comments", 0) or 0) * 3,
+                                created_at=created_at,
+                                comments_count=int(item.get("comments", 0) or 0),
+                            )
+                        )
 
                     return results
-
         except Exception as e:
-            logger.error(f"GitHub Discussions 搜索失败: {e}")
+            logger.error("GitHub discussions search failed: %s", e)
             return []
 
 
 class SearchAggregator:
-    """搜索聚合器 - 整合多个搜索源"""
+    """Aggregate multi-source external discussions."""
+
+    SPAM_HINTS = (
+        "buy now",
+        "limited time",
+        "subscribe",
+        "click here",
+        "free money",
+        "giveaway",
+        "casino",
+        "xxx",
+    )
 
     def __init__(self, github_token: Optional[str] = None):
         self.hackernews = HackerNewsSearcher()
-        self.reddit = RedditSearcher()
         self.github_discussions = GitHubDiscussionsSearcher()
         self.github_token = github_token
 
-    async def search_project(self, repo_name: str, description: str = "") -> Dict:
-        """全面搜索项目的外部讨论"""
-        exact_query = f'"{repo_name}"'
+    @staticmethod
+    def _normalize_term(term: str) -> str:
+        return re.sub(r"\s+", " ", (term or "").strip().lower())
 
-        search_tasks = [
-            self.hackernews.search(exact_query, limit=10),
-            self.reddit.search(exact_query, limit=10),
-            self.github_discussions.search(repo_name, self.github_token)
+    def _build_relevance_terms(self, repo_name: str, description: str = "") -> List[str]:
+        repo_name = (repo_name or "").strip()
+        repo_short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
+        keyword_source = f"{repo_name} {description}".strip()
+        keywords = QueryParser.extract_keywords(keyword_source, limit=6)
+
+        raw_terms = [repo_name, repo_short] + keywords
+        terms: List[str] = []
+        seen = set()
+        for raw in raw_terms:
+            normalized = self._normalize_term(raw)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(normalized)
+
+            for token in re.findall(r"[a-z0-9+#][a-z0-9_+\-]{1,24}", normalized):
+                token_norm = self._normalize_term(token)
+                if len(token_norm) < 3 or token_norm in seen:
+                    continue
+                seen.add(token_norm)
+                terms.append(token_norm)
+
+        return terms[:12]
+
+    def _compute_relevance_score(self, result: SearchResult, terms: List[str]) -> float:
+        if not terms:
+            return 0.0
+
+        title = self._normalize_term(result.title)
+        snippet = self._normalize_term(result.snippet)
+        weighted_hits = 0.0
+        term_hits = 0
+        max_hits = float(len(terms))
+
+        for term in terms:
+            if term and term in title:
+                weighted_hits += 1.0
+                term_hits += 1
+            elif term and term in snippet:
+                weighted_hits += 0.6
+                term_hits += 1
+
+        min_term_hits = 2 if len(terms) >= 4 else 1
+        if term_hits < min_term_hits:
+            return 0.0
+        return min(1.0, weighted_hits / max_hits)
+
+    def _passes_quality_gate(self, result: SearchResult) -> bool:
+        title = (result.title or "").strip()
+        snippet = (result.snippet or "").strip()
+        url = (result.url or "").strip()
+
+        if len(title) < 5:
+            return False
+        if not url:
+            return False
+        if len(title) + len(snippet) < 20:
+            return False
+
+        normalized_title = self._normalize_term(title)
+        normalized_body = self._normalize_term(f"{title} {snippet}")
+        if len(set(normalized_title)) <= 2:
+            return False
+
+        if not re.search(r"[a-z0-9\u4e00-\u9fff]", normalized_body):
+            return False
+        if any(hint in normalized_body for hint in self.SPAM_HINTS):
+            return False
+        return True
+
+    @staticmethod
+    def _normalize_popularity_by_source(results: List[SearchResult]) -> Dict[int, float]:
+        by_source: Dict[str, List[SearchResult]] = {}
+        for item in results:
+            by_source.setdefault(item.source, []).append(item)
+
+        popularity: Dict[int, float] = {}
+        for source_results in by_source.values():
+            scores = [float(max(0, r.score)) for r in source_results]
+            min_score = min(scores)
+            max_score = max(scores)
+
+            if max_score == min_score:
+                value = 1.0 if max_score > 0 else 0.0
+                for r in source_results:
+                    popularity[id(r)] = value
+                continue
+
+            span = max_score - min_score
+            for r in source_results:
+                popularity[id(r)] = (float(max(0, r.score)) - min_score) / span
+
+        return popularity
+
+    def _rank_results(
+        self,
+        results: List[SearchResult],
+        repo_name: str,
+        description: str,
+    ) -> List[Tuple[SearchResult, float, float, float]]:
+        if not results:
+            return []
+
+        quality_filtered = [item for item in results if self._passes_quality_gate(item)]
+        candidate_results = quality_filtered if quality_filtered else results
+        terms = self._build_relevance_terms(repo_name, description)
+        popularity_map = self._normalize_popularity_by_source(candidate_results)
+
+        ranked: List[Tuple[SearchResult, float, float, float]] = []
+        for item in candidate_results:
+            relevance = self._compute_relevance_score(item, terms)
+            popularity = popularity_map.get(id(item), 0.0)
+            final_score = relevance * 0.6 + popularity * 0.4
+            if relevance <= 0.0:
+                final_score = min(final_score, popularity * 0.1)
+            ranked.append((item, relevance, popularity, final_score))
+
+        ranked.sort(
+            key=lambda x: (
+                x[3],  # final score
+                x[1],  # relevance
+                x[2],  # normalized popularity
+                x[0].score,  # raw source score
+            ),
+            reverse=True,
+        )
+        return ranked
+
+    @staticmethod
+    def _dedupe_results(results: List[SearchResult]) -> List[SearchResult]:
+        kept: Dict[str, SearchResult] = {}
+        for item in results:
+            key = (item.url or f"{item.source}:{item.title}").strip().lower()
+            if not key:
+                key = f"{item.source}:{item.title}".strip().lower()
+            existed = kept.get(key)
+            if existed is None or item.score > existed.score:
+                kept[key] = item
+        return sorted(kept.values(), key=lambda x: x.score, reverse=True)
+
+    def _build_hn_queries(self, repo_name: str, description: str = "") -> List[str]:
+        repo_name = (repo_name or "").strip()
+        repo_short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
+        keyword_source = f"{repo_name} {description}".strip()
+        keywords = QueryParser.extract_keywords(keyword_source, limit=4)
+
+        candidates = [
+            f'"{repo_name}"' if repo_name else "",
+            f'"{repo_short}"' if repo_short and repo_short != repo_name else "",
+            " ".join(keywords) if keywords else "",
+            f'{repo_short} {" ".join(keywords[:2])}'.strip() if repo_short and keywords else "",
         ]
 
-        hn_results, reddit_results, github_results = await asyncio.gather(*search_tasks)
+        deduped: List[str] = []
+        seen = set()
+        for q in candidates:
+            q = q.strip()
+            if not q or q in seen:
+                continue
+            seen.add(q)
+            deduped.append(q)
+        return deduped[:4]
 
-        all_results = hn_results + reddit_results + github_results
+    async def search_project(self, repo_name: str, description: str = "") -> Dict:
+        hn_queries = self._build_hn_queries(repo_name, description)
 
-        hot_discussions = sorted(all_results, key=lambda x: x.score, reverse=True)[:5]
+        tasks = [self.hackernews.search(q, limit=8 if idx == 0 else 6) for idx, q in enumerate(hn_queries)]
+        tasks.append(self.github_discussions.search(repo_name, self.github_token))
+        outputs = await asyncio.gather(*tasks)
+
+        github_results = outputs[-1] if outputs else []
+        hn_merged_raw: List[SearchResult] = []
+        for bucket in outputs[:-1]:
+            hn_merged_raw.extend(bucket)
+
+        hn_results = self._dedupe_results(hn_merged_raw)
+        all_results = self._dedupe_results(hn_results + github_results)
+        ranked_results = self._rank_results(all_results, repo_name=repo_name, description=description)
+        hot_discussions = ranked_results[:5]
 
         sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
         for r in all_results:
-            sentiment_counts[r.sentiment] += 1
+            sentiment_counts[r.sentiment] = sentiment_counts.get(r.sentiment, 0) + 1
 
         raw_text_parts = []
-        for r in hot_discussions:
-            raw_text_parts.append(f"[{r.source}] {r.title}\n{r.snippet}\n")
+        for r, relevance, popularity, final_score in hot_discussions:
+            raw_text_parts.append(
+                f"[{r.source}] {r.title}\n{r.snippet}\n"
+                f"(final={final_score:.3f}, relevance={relevance:.3f}, popularity={popularity:.3f})\n"
+            )
 
         return {
+            "queries": {
+                "hn": hn_queries,
+                "github_discussions": f"repo:{repo_name} is:discussion sort:created-desc",
+            },
             "total_mentions": len(all_results),
             "sources": {
                 "hackernews": len(hn_results),
-                "reddit": len(reddit_results),
-                "github_discussions": len(github_results)
+                "github_discussions": len(github_results),
             },
             "hot_discussions": [
                 {
                     "source": r.source,
                     "title": r.title,
                     "url": r.url,
-                    "score": r.score,
+                    "score": round(final_score, 4),
+                    "relevance_score": round(relevance, 4),
+                    "popularity_score": round(popularity, 4),
+                    "raw_score": r.score,
                     "sentiment": r.sentiment,
-                    "comments": r.comments_count
+                    "comments": r.comments_count,
                 }
-                for r in hot_discussions
+                for r, relevance, popularity, final_score in hot_discussions
             ],
             "sentiment_summary": sentiment_counts,
             "raw_text": "\n".join(raw_text_parts),
-            "has_external_discussion": len(all_results) > 0
+            "has_external_discussion": len(all_results) > 0,
         }

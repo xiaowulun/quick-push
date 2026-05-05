@@ -23,6 +23,8 @@ class DashboardResponse(BaseModel):
     infra_and_tools: List[ProjectCard]
     product_and_ui: List[ProjectCard]
     knowledge_base: List[ProjectCard]
+    data_date: Optional[str] = None
+    is_fresh_today: bool = False
 
 
 class DashboardSummary(BaseModel):
@@ -72,6 +74,8 @@ class DashboardInsightsResponse(BaseModel):
     language_distribution: List[DashboardDistributionItem]
     decision_projects: List[DashboardDecisionProject]
     recent_activities: List[DashboardActivityItem]
+    data_date: Optional[str] = None
+    is_fresh_today: bool = False
 
 
 class CategoryTrend(BaseModel):
@@ -101,6 +105,8 @@ class TrendsResponse(BaseModel):
     hot_projects: List[HotProject]
     total_projects: int
     total_records: int
+    data_date: Optional[str] = None
+    is_fresh_today: bool = False
 
 
 class SearchResult(BaseModel):
@@ -114,12 +120,14 @@ class SearchResult(BaseModel):
     keywords: List[str] = Field(default_factory=list)
     tech_stack: List[str] = Field(default_factory=list)
     use_cases: List[str] = Field(default_factory=list)
+    match_reasons: List[str] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):
     query: str
     results: List[SearchResult]
     total: int
+    parsed_filters: Optional[dict] = None
 
 
 class ProjectBasicInfo(BaseModel):

@@ -4,28 +4,33 @@
       <div class="spinner"></div>
       <div>加载中...</div>
     </div>
-    
+
     <div v-else-if="error" class="error-state">
       <div class="error-state-icon">⚠️</div>
       <div class="error-state-title">加载失败</div>
       <div class="error-state-desc">{{ error }}</div>
       <button class="retry-btn" @click="loadData">重试</button>
     </div>
-    
+
     <div v-else-if="data && data.total_projects === 0" class="empty-state">
       <div class="empty-state-icon">📭</div>
       <div class="empty-state-title">暂无趋势数据</div>
-      <div class="empty-state-desc">当前时间范围内没有足够的数据来展示趋势分析</div>
+      <div class="empty-state-desc">当前时间范围内没有足够的数据用于趋势分析。</div>
     </div>
-    
+
     <template v-else-if="data">
+      <div class="freshness-banner" role="status" aria-live="polite">
+        <span class="freshness-dot" :class="{ stale: !isFreshToday }"></span>
+        <span>{{ freshnessText }}</span>
+      </div>
+
       <div class="stats-grid">
         <StatCard :value="data.total_projects" label="项目总数" />
         <StatCard :value="data.total_records" label="记录总数" />
         <StatCard :value="data.category_trends?.length || 0" label="分类数量" />
         <StatCard :value="data.language_trends?.length || 0" label="语言种类" />
       </div>
-      
+
       <div class="trends-grid">
         <div class="chart-card">
           <h3 class="chart-title">分类趋势（{{ timeFilter }}天）</h3>
@@ -33,17 +38,17 @@
             <canvas ref="categoryChartRef"></canvas>
           </div>
         </div>
-        
+
         <div class="chart-card">
           <h3 class="chart-title">语言分布</h3>
           <div class="language-list">
-            <div 
-              v-for="(lang, index) in topLanguages" 
+            <div
+              v-for="(lang, index) in topLanguages"
               :key="lang.language"
               class="language-item"
             >
-              <div 
-                class="language-color" 
+              <div
+                class="language-color"
                 :style="{ background: languageColors[index % languageColors.length] }"
               ></div>
               <div class="language-info">
@@ -51,9 +56,9 @@
                 <span class="language-count">{{ lang.count }}</span>
               </div>
               <div class="language-bar">
-                <div 
-                  class="language-bar-fill" 
-                  :style="{ 
+                <div
+                  class="language-bar-fill"
+                  :style="{
                     width: `${(lang.count / maxLanguageCount) * 100}%`,
                     background: languageColors[index % languageColors.length]
                   }"
@@ -62,12 +67,12 @@
             </div>
           </div>
         </div>
-        
+
         <div class="chart-card full-width">
           <h3 class="chart-title">热门项目排行 TOP 10</h3>
           <div class="ranking-list">
-            <div 
-              v-for="(proj, index) in topProjects" 
+            <div
+              v-for="(proj, index) in topProjects"
               :key="proj.repo_name"
               class="ranking-item"
               role="button"
@@ -99,6 +104,7 @@ import { useRouter } from 'vue-router'
 import { Chart, registerables } from 'chart.js'
 import StatCard from '@/components/StatCard.vue'
 import { useApi } from '@/composables/useApi'
+import { getCategoryLabel } from '@/constants/categories'
 
 Chart.register(...registerables)
 
@@ -126,23 +132,18 @@ const maxLanguageCount = computed(() => {
 const topProjects = computed(() => {
   return data.value?.hot_projects?.slice(0, 10) || []
 })
+const dataDate = computed(() => String(data.value?.data_date || '').trim())
+const isFreshToday = computed(() => Boolean(data.value?.is_fresh_today))
+const freshnessText = computed(() => {
+  if (!dataDate.value) return '数据日期：暂无'
+  return isFreshToday.value ? `数据日期：${dataDate.value}（今日）` : `数据日期：${dataDate.value}（非今日）`
+})
 
 function getRankClass(index) {
   if (index === 0) return 'rank-1'
   if (index === 1) return 'rank-2'
   if (index === 2) return 'rank-3'
   return 'rank-other'
-}
-
-function getCategoryName(category) {
-  const names = {
-    'ai_ecosystem': 'AI 生态',
-    'infra_and_tools': '开发工具',
-    'product_and_ui': '产品与 UI',
-    'knowledge_base': '知识库',
-    'unknown': '未分类'
-  }
-  return names[category] || category
 }
 
 function goToDetail(repoFullName) {
@@ -155,18 +156,18 @@ function goToDetail(repoFullName) {
 
 function createChart() {
   if (!categoryChartRef.value || !data.value?.category_trends?.length) return
-  
+
   if (chartInstance) {
     chartInstance.destroy()
   }
-  
+
   const ctx = categoryChartRef.value.getContext('2d')
   const categoryTrends = data.value.category_trends
-  
+
   chartInstance = new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: categoryTrends.map(c => getCategoryName(c.category)),
+      labels: categoryTrends.map(c => getCategoryLabel(c.category)),
       datasets: [{
         data: categoryTrends.map(c => c.count),
         backgroundColor: [
@@ -260,6 +261,30 @@ onUnmounted(() => {
 <style scoped>
 .trends-view {
   min-height: 400px;
+}
+
+.freshness-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.freshness-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #16a34a;
+}
+
+.freshness-dot.stale {
+  background: #ea580c;
 }
 
 .stats-grid {
@@ -416,7 +441,7 @@ onUnmounted(() => {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
   }
-  
+
   .trends-grid {
     grid-template-columns: 1fr;
   }

@@ -1,5 +1,5 @@
 ﻿<template>
-  <router-view v-if="isDiscoverRoute" />
+  <router-view v-if="isFullscreenRoute" />
 
   <div v-else class="paper-shell" :class="[themeClass, { 'sidebar-collapsed': isSidebarCollapsed }]">
     <aside class="side-panel" aria-label="主导航">
@@ -13,7 +13,7 @@
       <div class="side-divider"></div>
 
       <nav class="side-nav">
-        <button class="nav-btn" :class="{ active: route.path === '/chat' }" type="button" aria-label="发现" @click="router.push('/chat')">
+        <button class="nav-btn" :class="{ active: route.path === '/chat' || route.path === '/discover' }" type="button" aria-label="发现" @click="router.push('/chat')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <circle cx="12" cy="12" r="8" />
             <path d="M12 12l4-4" />
@@ -132,7 +132,9 @@ const pageTitles = {
   '/settings': '系统设置'
 }
 
-const isDiscoverRoute = computed(() => route.path === '/chat')
+const isFullscreenRoute = computed(() => {
+  return route.path === '/discover' || route.path === '/chat' || route.path === '/dashboard'
+})
 
 const pageTitle = computed(() => {
   if (route.path.startsWith('/projects/')) {

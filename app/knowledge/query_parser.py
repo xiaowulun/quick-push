@@ -1,4 +1,4 @@
-"""
+﻿"""
 Query parser: extract soft filter conditions from user query.
 
 Parsing strategy:
@@ -55,6 +55,34 @@ class QueryFilters(BaseModel):
         if self.min_stars is not None:
             boost["min_stars"] = self.min_stars
         return boost
+
+    def to_active_filter_dict(self) -> dict:
+        active = {}
+        if self.language:
+            active["language"] = self.language
+        if self.category:
+            active["category"] = self.category
+        if self.days:
+            active["days"] = self.days
+        if self.min_stars is not None:
+            active["min_stars"] = self.min_stars
+        if self.keywords:
+            active["keywords"] = list(self.keywords)
+        return active
+
+    def to_explanation_lines(self) -> List[str]:
+        lines: List[str] = []
+        if self.language:
+            lines.append(f"语言偏好: {self.language}")
+        if self.category:
+            lines.append(f"类别偏好: {self.category}")
+        if self.days:
+            lines.append(f"时间范围: 近 {self.days} 天")
+        if self.min_stars is not None:
+            lines.append(f"热度门槛: stars >= {self.min_stars}")
+        if self.keywords:
+            lines.append("关键词: " + "、".join(self.keywords[:6]))
+        return lines
 
 
 class QueryParser:
@@ -142,6 +170,7 @@ query: {query}
         "ruby": "Ruby",
         "kotlin": "Kotlin",
     }
+    LANGUAGE_ALIASES_LOWER = set(LANGUAGE_MAP.keys())
 
     FILTER_INTENT_HINTS = (
         "language",
@@ -165,7 +194,7 @@ query: {query}
     def __init__(self):
         config = get_config()
         timeout = float(config.openai.request_timeout)
-        # 解析器属于前置步骤，超时预算应明显小于主对话预算。
+        # Parser is a pre-step; keep timeout budget smaller than main chat budget.
         self.request_timeout = max(4.0, min(timeout, 12.0))
         self.primary_max_retries = max(1, min(int(getattr(config.behavior, "max_retries", 2)), 2))
         self.fallback_max_retries = 1
@@ -224,7 +253,7 @@ query: {query}
                 if (not is_timeout) or is_last_attempt:
                     raise
                 logger.warning(
-                    "查询解析%s超时，第 %s/%s 次重试，%.1f 秒后继续：%s",
+                    "query parse %s timeout, retry %s/%s after %.1fs: %s",
                     stage,
                     attempt,
                     retries,
@@ -372,32 +401,65 @@ query: {query}
 
     @staticmethod
     def _parse_stars_from_text(text: str) -> Optional[int]:
-        raw = (text or "").lower()
-        patterns = [
-            r"(\d+(?:\.\d+)?)\s*[kK]\s*stars?",
-            r"(\d+(?:\.\d+)?)\s*[kK]",
-            r"(\d+(?:\.\d+)?)\s*万\s*stars?",
-            r"(\d+(?:\.\d+)?)\s*万",
-            r"(\d+(?:\.\d+)?)\s*千\s*stars?",
-            r"(\d+(?:\.\d+)?)\s*千",
-            r"(\d+)\s*stars?",
-            r"(\d+)\s*star",
+        raw = (text or "").strip().lower()
+        if not raw:
+            return None
+
+        unit_patterns = [
+            (r"(\d+(?:\.\d+)?)\s*[k]\b", 1000),
+            (r"(\d+(?:\.\d+)?)\s*[w]\b", 10000),
+            (r"(\d+(?:\.\d+)?)\s*[q]\b", 1000),
+            (r"(\d+(?:\.\d+)?)\s*万\b", 10000),
+            (r"(\d+(?:\.\d+)?)\s*千\b", 1000),
         ]
-        for pattern in patterns:
+        for pattern, factor in unit_patterns:
             match = re.search(pattern, raw)
-            if not match:
-                continue
-            value = float(match.group(1))
-            if "k" in pattern.lower():
-                return int(value * 1000)
-            if "万" in pattern:
-                return int(value * 10000)
-            if "千" in pattern:
-                return int(value * 1000)
-            return int(value)
+            if match:
+                return int(float(match.group(1)) * factor)
+
+        plain_match = re.search(r"(\d+)\s*stars?\b", raw) or re.search(r"(\d+)\s*star\b", raw)
+        if plain_match:
+            return int(plain_match.group(1))
+
         if any(token in raw for token in ["热门", "很火", "高星", "popular", "hot"]):
             return 500
         return None
+    @classmethod
+    def _extract_heuristic_keywords(cls, query: str, limit: int = 4) -> List[str]:
+        # Keep heuristic keywords conservative to avoid over-filtering.
+        keywords: List[str] = []
+        generic_tokens = {
+            "find",
+            "show",
+            "best",
+            "good",
+            "project",
+            "projects",
+            "github",
+            "trending",
+            "star",
+            "stars",
+            "popular",
+            "hot",
+            "ai",
+            "llm",
+            "agent",
+            "rag",
+        }
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_+\-]{1,20}", query or ""):
+            lower_token = token.lower()
+            if lower_token in generic_tokens:
+                continue
+            if lower_token in cls.LANGUAGE_ALIASES_LOWER:
+                continue
+            keywords.append(token)
+        normalized = cls._normalize_keywords(keywords)
+        return normalized[: max(1, min(limit, 8))]
+
+    @classmethod
+    def extract_keywords(cls, text: str, limit: int = 4) -> List[str]:
+        """Public keyword extractor for cross-module reuse."""
+        return cls._extract_heuristic_keywords(text, limit=limit)
 
     def _heuristic_parse(self, query: str) -> QueryFilters:
         q = (query or "").strip()
@@ -434,33 +496,7 @@ query: {query}
 
         min_stars = self._parse_stars_from_text(q)
 
-        # Keep heuristic keywords conservative to avoid over-filtering.
-        keywords: List[str] = []
-        generic_tokens = {
-            "find",
-            "show",
-            "best",
-            "good",
-            "project",
-            "projects",
-            "github",
-            "trending",
-            "star",
-            "stars",
-            "popular",
-            "hot",
-            "ai",
-            "llm",
-            "agent",
-            "rag",
-        }
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9_+\-]{1,20}", q):
-            if token.lower() in generic_tokens:
-                continue
-            if token.lower() in {k.lower() for k in self.LANGUAGE_MAP}:
-                continue
-            keywords.append(token)
-        keywords = self._normalize_keywords(keywords)[:4]
+        keywords = self.extract_keywords(q, limit=4)
 
         return QueryFilters(
             language=language,
@@ -498,7 +534,7 @@ query: {query}
         result = await self._invoke_chain_with_retry(
             chain=chain,
             payload={"query": query},
-            stage="主链路",
+            stage="primary",
             retries=self.primary_max_retries,
         )
 
@@ -520,7 +556,7 @@ query: {query}
         message = await self._invoke_chain_with_retry(
             chain=chain,
             payload={"query": query},
-            stage="回退链路",
+            stage="fallback",
             retries=self.fallback_max_retries,
         )
         parsed = self._extract_json_blob(getattr(message, "content", ""))
@@ -540,7 +576,7 @@ query: {query}
         try:
             normalized = await self._primary_parse(query)
             if normalized.has_filters():
-                logger.info("查询解析LLM命中: %s -> %s", query, normalized.model_dump())
+                logger.info("查询解析 LLM 命中: %s -> %s", query, normalized.model_dump())
                 return normalized
             return heuristic
         except Exception as e:
@@ -580,3 +616,4 @@ def get_query_parser() -> QueryParser:
     if _parser is None:
         _parser = QueryParser()
     return _parser
+

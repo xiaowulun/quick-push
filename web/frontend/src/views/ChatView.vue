@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="paper-shell" :class="[themeClass, { 'sidebar-collapsed': isSidebarCollapsed }]">
     <aside class="side-panel" aria-label="主导航">
       <div class="brand-block">
@@ -112,17 +112,20 @@
             <button class="search-btn" type="button" @click="applySearch">搜索</button>
           </label>
 
-          <div class="period-group" role="tablist" aria-label="时间范围">
-            <button
-              v-for="item in periodOptions"
-              :key="item.days"
-              class="period-btn"
-              :class="{ active: daysFilter === item.days }"
-              type="button"
-              @click="daysFilter = item.days"
-            >
-              {{ item.label }}
-            </button>
+          <div class="period-wrap">
+            <div class="period-group" role="tablist" aria-label="时间范围">
+              <button
+                v-for="item in periodOptions"
+                :key="item.days"
+                class="period-btn"
+                :class="{ active: daysFilter === item.days }"
+                type="button"
+                @click="daysFilter = item.days"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+            <p class="period-freshness" :class="{ stale: !feedIsFreshToday }">{{ feedFreshnessText }}</p>
           </div>
         </div>
       </header>
@@ -338,6 +341,7 @@ import LogoIcon from '@/components/LogoIcon.vue'
 import DashboardIcon from '@/components/icons/DashboardIcon.vue'
 import SettingsIcon from '@/components/icons/SettingsIcon.vue'
 import { useApi } from '@/composables/useApi'
+import { CATEGORY_META, getCategoryLabel } from '@/constants/categories'
 
 const router = useRouter()
 const { fetchDashboard, streamChat } = useApi()
@@ -346,28 +350,28 @@ const loadingFeed = ref(false)
 const feedError = ref('')
 const projects = ref([])
 const daysFilter = ref(1)
+const feedDataDate = ref('')
+const feedIsFreshToday = ref(false)
 const searchText = ref('')
 const searchDraft = ref('')
 const theme = ref('light')
 const isSidebarCollapsed = ref(false)
 
 const periodOptions = [
-  { days: 1, label: '24小时' },
-  { days: 7, label: '7天' },
-  { days: 30, label: '30天' }
+  { days: 1, label: '日' },
+  { days: 7, label: '周' },
+  { days: 30, label: '月' }
 ]
 
-const CATEGORY_MAP = [
-  { key: 'ai_ecosystem', label: 'AI生态' },
-  { key: 'infra_and_tools', label: '基础设施' },
-  { key: 'product_and_ui', label: '产品与UI' },
-  { key: 'knowledge_base', label: '知识库' }
-]
+const CATEGORY_MAP = CATEGORY_META.map((item) => ({
+  key: item.key,
+  label: item.label
+}))
 
 const messages = ref([
   {
     role: 'assistant',
-    content: '我可以帮你对比项目、识别风险、给出落地建议。点击卡片里的“问 Copilot”开始。'
+    content: '我可以帮你对比项目、识别风险并给出落地建议。点击卡片里的“问 OpenScout”开始。'
   }
 ])
 
@@ -422,6 +426,14 @@ const filteredProjects = computed(() => {
   })
 })
 
+const feedFreshnessText = computed(() => {
+  const dateText = String(feedDataDate.value || '').trim()
+  if (!dateText) {
+    return daysFilter.value === 1 ? '当日暂无数据' : '当前范围暂无有效数据'
+  }
+  return feedIsFreshToday.value ? `数据日期：${dateText}（今日）` : `数据日期：${dateText}（非今日）`
+})
+
 function formatNumber(value) {
   return Number(value || 0).toLocaleString()
 }
@@ -462,10 +474,10 @@ function recommendationsText(project) {
 
 function estimateDifficulty(project) {
   let score = 0
-  const category = project.category_label || ''
+  const category = String(project.category || '')
 
-  if (category === '基础设施') score += 2
-  if (category === 'AI生态' || category === '产品与UI') score += 1
+  if (category === 'infra_and_tools') score += 2
+  if (category === 'ai_ecosystem' || category === 'product_and_ui') score += 1
 
   const stackCount = (project.tech_stack || []).length
   if (stackCount >= 4) score += 2
@@ -516,13 +528,17 @@ async function loadFeed() {
 
   try {
     const data = await fetchDashboard(daysFilter.value)
-    projects.value = CATEGORY_MAP.flatMap(({ key, label }) =>
+    feedDataDate.value = String(data?.data_date || '')
+    feedIsFreshToday.value = Boolean(data?.is_fresh_today)
+    projects.value = CATEGORY_MAP.flatMap(({ key }) =>
       (data[key] || []).map((item) => ({
         ...item,
-        category_label: label
+        category_label: getCategoryLabel(item.category)
       }))
     )
   } catch (err) {
+    feedDataDate.value = ''
+    feedIsFreshToday.value = false
     feedError.value = err.message || '加载失败'
   } finally {
     loadingFeed.value = false
@@ -559,6 +575,8 @@ function askOpenScout(project) {
   draft.value = `请帮我分析 ${project.repo_name} 的落地价值、主要风险和优先实现建议。`
   queueScrollToBottom()
 }
+
+
 
 function startGithubOAuth() {
   if (!githubOauthLoginUrl) {
@@ -1165,6 +1183,13 @@ watch(theme, (value) => {
   gap: 8px;
 }
 
+.period-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
 .period-btn {
   min-width: 60px;
   border: 1px solid var(--line);
@@ -1180,6 +1205,16 @@ watch(theme, (value) => {
   border-color: var(--line-strong);
   color: var(--primary);
   background: var(--primary-soft);
+}
+
+.period-freshness {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.period-freshness.stale {
+  color: #c2410c;
 }
 
 .feed-grid {
@@ -1865,6 +1900,10 @@ watch(theme, (value) => {
     grid-template-columns: 1fr;
   }
 
+  .period-wrap {
+    align-items: flex-start;
+  }
+
   .repo-actions {
     display: block;
   }
@@ -1895,3 +1934,5 @@ watch(theme, (value) => {
   }
 }
 </style>
+
+

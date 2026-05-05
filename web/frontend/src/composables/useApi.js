@@ -129,6 +129,62 @@ export function useApi() {
     }
   }
 
+  async function fetchDiscoverFeed({ days = 7, limit = 12, interests = '' } = {}) {
+    loading.value = true
+    error.value = null
+    try {
+      const params = new URLSearchParams()
+      params.set('days', String(days))
+      params.set('limit', String(limit))
+      if (String(interests || '').trim()) {
+        params.set('interests', String(interests).trim())
+      }
+      return await fetchWithTimeout(`${API_BASE}/discover/feed?${params.toString()}`)
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function compareProjectScore(repoNames = []) {
+    loading.value = true
+    error.value = null
+    try {
+      return await fetchWithTimeout(`${API_BASE}/compare/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_names: repoNames })
+      })
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchAssistantRecommend(query, repoNames = []) {
+    loading.value = true
+    error.value = null
+    try {
+      return await fetchWithTimeout(`${API_BASE}/assistant/recommend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: String(query || ''),
+          repo_names: repoNames
+        })
+      })
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function* streamChat(query, options = {}) {
     const {
       topK = 5,
@@ -152,7 +208,7 @@ export function useApi() {
       }, ms)
     }
 
-    // 首包超时：用于保护完全无响应场景（网络异常/后端卡死）。
+    // 首包超时，用于保护完全无响应场景（网络异常/后端阻塞）。
     armTimeout(timeoutMs)
 
     if (signal) {
@@ -191,7 +247,7 @@ export function useApi() {
         const { done, value } = await reader.read()
         if (done) break
 
-        // 流式阶段改用空闲超时：只要持续有数据，就不应该被总时长硬中断。
+        // 流式阶段改为“空闲超时”，持续有数据就不应被总时长硬中断。
         armTimeout(idleTimeoutMs)
 
         buffer += decoder.decode(value, { stream: true })
@@ -213,7 +269,7 @@ export function useApi() {
       if (err?.name === 'AbortError') {
         if (timedOut) {
           const timeoutHintSec = Math.floor(Math.max(timeoutMs, idleTimeoutMs) / 1000)
-          throw buildTimeoutError(`对话超时（超过${timeoutHintSec}秒无新内容），请重试。`)
+          throw buildTimeoutError(`对话超时（超过 ${timeoutHintSec} 秒无新内容），请重试。`)
         }
         if (stoppedByUser) {
           const stopErr = new Error('用户已停止生成')
@@ -237,6 +293,9 @@ export function useApi() {
     fetchDashboardInsights,
     fetchTrends,
     fetchProjectDetail,
+    fetchDiscoverFeed,
+    compareProjectScore,
+    fetchAssistantRecommend,
     streamChat
   }
 }
